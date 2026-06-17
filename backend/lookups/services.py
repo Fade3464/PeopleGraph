@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from django.db import transaction
 from django.utils import timezone
 
-from .models import PhoneLookupCache
+from .models import BlacklistLookupCache, PhoneLookupCache
 
 
 class LookupError(Exception):
@@ -39,14 +39,19 @@ def normalize_phone(phone_number: str) -> tuple[str, str]:
 
 def lookup_phone(phone_number: str) -> dict[str, Any]:
     normalized_phone, display_phone = normalize_phone(phone_number)
+    phone_digits = normalized_phone[-10:]
     cached = PhoneLookupCache.objects.filter(normalized_phone=normalized_phone).first()
 
     if cached:
-        return build_lookup_response(cached, source='cache')
+        response = build_lookup_response(cached, source='cache')
+        response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
+        return response
 
-    upstream_response = fetch_phone_lookup(normalized_phone[-10:])
+    upstream_response = fetch_phone_lookup(phone_digits)
     cache = persist_phone_lookup(normalized_phone, display_phone, upstream_response)
-    return build_lookup_response(cache, source='upstream')
+    response = build_lookup_response(cache, source='upstream')
+    response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
+    return response
 
 
 def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
@@ -83,6 +88,67 @@ def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
         raise UpstreamLookupError('Lookup provider returned an invalid response.') from exc
 
 
+def lookup_blacklist(phone_digits: str, normalized_phone: str, display_phone: str) -> dict[str, Any]:
+    cached = BlacklistLookupCache.objects.filter(normalized_phone=normalized_phone).first()
+
+    if cached:
+        return build_blacklist_response(cached, source='cache')
+
+    try:
+        upstream_response = fetch_blacklist_lookup(phone_digits)
+    except UpstreamLookupError as exc:
+        return {
+            'status': 'error',
+            'message': str(exc),
+            'source': 'error',
+            'phone_number': display_phone,
+            'normalized_phone': normalized_phone,
+            'summary_status': 'Unavailable',
+            'bla_code': '',
+            'tcpa_status': 'Unavailable',
+            'risk_category': 'unknown',
+            'status_array': [],
+            'is_bad_number': False,
+        }
+
+    cache = persist_blacklist_lookup(normalized_phone, phone_digits, display_phone, upstream_response)
+    return build_blacklist_response(cache, source='upstream')
+
+
+def fetch_blacklist_lookup(phone_digits: str) -> dict[str, Any]:
+    api_key = os.environ.get('TCPA_BLACKLIST_API_KEY')
+    if not api_key:
+        raise UpstreamLookupError('TCPA_BLACKLIST_API_KEY is not configured.')
+
+    endpoint = os.environ.get(
+        'TCPA_BLACKLIST_LOOKUP_URL',
+        'https://api.tcpablacklist.com/api/phone-lookup/',
+    )
+    timeout = float(os.environ.get('TCPA_BLACKLIST_TIMEOUT_SECONDS', '20'))
+    payload = json.dumps({'phone': phone_digits}).encode('utf-8')
+    request = Request(
+        endpoint,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'X-API-Key': api_key,
+        },
+        method='POST',
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode('utf-8')
+            return json.loads(body)
+    except HTTPError as exc:
+        body = exc.read().decode('utf-8', errors='replace')
+        raise UpstreamLookupError(f'TCPA provider returned {exc.code}: {body[:240]}') from exc
+    except (URLError, TimeoutError) as exc:
+        raise UpstreamLookupError('TCPA provider is unavailable. Please try again.') from exc
+    except json.JSONDecodeError as exc:
+        raise UpstreamLookupError('TCPA provider returned an invalid response.') from exc
+
+
 @transaction.atomic
 def persist_phone_lookup(
     normalized_phone: str,
@@ -97,6 +163,32 @@ def persist_phone_lookup(
             'status': str(response.get('status', 'unknown')),
             'message': str(response.get('message', '')),
             'result_count': len(persons),
+            'raw_response': response,
+            'updated_at': timezone.now(),
+        },
+    )
+    return cache
+
+
+@transaction.atomic
+def persist_blacklist_lookup(
+    normalized_phone: str,
+    phone_digits: str,
+    display_phone: str,
+    response: dict[str, Any],
+) -> BlacklistLookupCache:
+    extracted = extract_blacklist_fields(response)
+    cache, _ = BlacklistLookupCache.objects.update_or_create(
+        normalized_phone=normalized_phone,
+        defaults={
+            'phone_digits': phone_digits,
+            'display_phone': display_phone,
+            'bla_code': extracted['bla_code'],
+            'tcpa_status': extracted['tcpa_status'],
+            'summary_status': extracted['summary_status'],
+            'risk_category': extracted['risk_category'],
+            'status_array': extracted['status_array'],
+            'is_bad_number': extracted['is_bad_number'],
             'raw_response': response,
             'updated_at': timezone.now(),
         },
@@ -122,6 +214,58 @@ def build_lookup_response(cache: PhoneLookupCache, source: str) -> dict[str, Any
             'pagination': pagination,
             'result_count': cache.result_count,
         },
+    }
+
+
+def build_blacklist_response(cache: BlacklistLookupCache, source: str) -> dict[str, Any]:
+    extracted = extract_blacklist_fields(cache.raw_response or {})
+    bla_code = cache.bla_code or extracted['bla_code']
+    tcpa_status = cache.tcpa_status or extracted['tcpa_status']
+    summary_status = cache.summary_status or extracted['summary_status']
+
+    return {
+        'status': 'ok',
+        'message': tcpa_status or summary_status or 'No TCPA status returned',
+        'source': source,
+        'phone_number': cache.display_phone,
+        'normalized_phone': cache.normalized_phone,
+        'bla_code': bla_code,
+        'tcpa_status': tcpa_status,
+        'summary_status': summary_status,
+        'risk_category': cache.risk_category,
+        'status_array': cache.status_array,
+        'is_bad_number': cache.is_bad_number,
+        'raw': cache.raw_response,
+    }
+
+
+def extract_blacklist_fields(response: dict[str, Any]) -> dict[str, Any]:
+    scrub = response.get('scrub') or {}
+    lookup = response.get('lookup') or {}
+    litigator = lookup.get('tcpa_litigator') or {}
+    results = scrub.get('results') or litigator.get('results') or {}
+    litigator_results = litigator.get('results') or {}
+
+    bla_code = lookup.get('code') or ''
+    tcpa_status = results.get('status') or litigator_results.get('status') or ''
+    summary_status = (
+        scrub.get('summary_status')
+        or litigator.get('summary_status')
+        or tcpa_status
+        or lookup.get('message')
+        or ''
+    )
+    risk_category = scrub.get('risk_category') or litigator.get('risk_category') or ''
+    status_array = results.get('status_array') or []
+    is_bad_number = bool(results.get('is_bad_number') or status_array)
+
+    return {
+        'bla_code': str(bla_code),
+        'tcpa_status': str(tcpa_status),
+        'summary_status': str(summary_status),
+        'risk_category': str(risk_category),
+        'status_array': status_array if isinstance(status_array, list) else [],
+        'is_bad_number': is_bad_number,
     }
 
 

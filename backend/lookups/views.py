@@ -2,6 +2,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 
+from .models import PhoneLookupAudit
 from .services import InvalidPhoneError, UpstreamLookupError, lookup_phone
 
 
@@ -38,4 +39,24 @@ class PhoneLookupView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
+        PhoneLookupAudit.objects.create(
+            phone_number=result.get('query', {}).get('phone_number', phone_number),
+            normalized_phone=result.get('query', {}).get('normalized_phone', ''),
+            fetched_from_dbcache=result.get('source') == 'cache',
+            fetched_from_bla_cache=result.get('blacklist', {}).get('source') == 'cache',
+            public_ip=get_public_ip(request),
+        )
+
         return Response(result)
+
+
+def get_public_ip(request):
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip() or None
+
+    real_ip = request.META.get('HTTP_X_REAL_IP')
+    if real_ip:
+        return real_ip.strip()
+
+    return request.META.get('REMOTE_ADDR')
