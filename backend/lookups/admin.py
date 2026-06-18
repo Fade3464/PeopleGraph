@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BlacklistLookupCache, PhoneLookupAudit, PhoneLookupCache
+from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupAudit, PhoneLookupCache
 
 
 @admin.register(PhoneLookupCache)
@@ -30,6 +30,27 @@ class BlacklistLookupCacheAdmin(admin.ModelAdmin):
     )
     search_fields = ('display_phone', 'normalized_phone', 'phone_digits')
     list_filter = ('risk_category', 'is_bad_number', 'bla_code')
+    readonly_fields = ('fetched_at', 'updated_at')
+
+
+@admin.register(NameAddrLookupCache)
+class NameAddrLookupCacheAdmin(admin.ModelAdmin):
+    list_display = (
+        'full_name',
+        'address',
+        'zipcode',
+        'status',
+        'result_count',
+        'updated_at',
+    )
+    search_fields = (
+        'full_name',
+        'address',
+        'zipcode',
+        'first_name_normalized',
+        'last_name_normalized',
+    )
+    list_filter = ('status',)
     readonly_fields = ('fetched_at', 'updated_at')
 
 

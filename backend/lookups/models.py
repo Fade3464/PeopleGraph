@@ -22,6 +22,42 @@ class PhoneLookupCache(models.Model):
         return f'{self.display_phone} ({self.result_count} result(s))'
 
 
+class NameAddrLookupCache(models.Model):
+    first_name_normalized = models.CharField(max_length=80, db_index=True)
+    last_name_normalized = models.CharField(max_length=160, db_index=True)
+    location_normalized = models.CharField(max_length=255, db_index=True)
+    address = models.CharField(max_length=255, blank=True, db_index=True)
+    zipcode = models.CharField(max_length=10, blank=True, db_index=True)
+    full_name = models.CharField(max_length=255)
+    status = models.CharField(max_length=32)
+    message = models.CharField(max_length=255, blank=True)
+    result_count = models.PositiveIntegerField(default=0, db_index=True)
+    raw_response = models.JSONField()
+    fetched_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['first_name_normalized', 'last_name_normalized', 'location_normalized'],
+                name='unique_name_address_lookup_cache_key',
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=['first_name_normalized', 'last_name_normalized', 'location_normalized'],
+                name='nameaddr_cache_key_idx',
+            ),
+            models.Index(fields=['zipcode', '-updated_at'], name='nameaddr_zip_updated_idx'),
+            models.Index(fields=['result_count', '-updated_at'], name='nameaddr_count_updated_idx'),
+        ]
+
+    def __str__(self):
+        location = self.zipcode or self.address
+        return f'{self.full_name} at {location} ({self.result_count} result(s))'
+
+
 class BlacklistLookupCache(models.Model):
     normalized_phone = models.CharField(max_length=16, unique=True, db_index=True)
     phone_digits = models.CharField(max_length=10, unique=True, db_index=True)

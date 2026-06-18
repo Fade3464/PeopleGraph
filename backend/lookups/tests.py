@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 from rest_framework.test import APITestCase
 
-from .models import BlacklistLookupCache, PhoneLookupAudit, PhoneLookupCache
+from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupAudit, PhoneLookupCache
 
 
 SAMPLE_RESPONSE = {
@@ -166,6 +166,83 @@ class PhoneLookupTests(APITestCase):
         response = self.client.post(
             '/api/v1/lookups/phone/',
             {'phone_number': '123'},
+            format='json',
+            HTTP_HOST='localhost',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+
+
+class NameAddressLookupTests(APITestCase):
+    def test_name_address_lookup_fetches_and_caches_upstream_response(self):
+        with patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch:
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'Evencio Pena', 'address_or_zip': '02118'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['source'], 'upstream')
+        self.assertEqual(response.data['data']['result_count'], 1)
+        self.assertEqual(response.data['data']['persons'][0]['name'], 'Evencio Pena')
+        self.assertNotIn('blacklist', response.data)
+        self.assertEqual(NameAddrLookupCache.objects.count(), 1)
+        cache = NameAddrLookupCache.objects.first()
+        self.assertEqual(cache.first_name_normalized, 'evencio')
+        self.assertEqual(cache.last_name_normalized, 'pena')
+        self.assertEqual(cache.location_normalized, 'zip:02118')
+        fetch.assert_called_once_with('Evencio', 'Pena', '', '02118')
+
+    def test_name_address_lookup_uses_cache_when_available(self):
+        NameAddrLookupCache.objects.create(
+            first_name_normalized='evencio',
+            last_name_normalized='pena',
+            location_normalized='zip:02118',
+            address='',
+            zipcode='02118',
+            full_name='Evencio Pena',
+            status='success',
+            message='Found 1 result(s)',
+            result_count=1,
+            raw_response=SAMPLE_RESPONSE,
+        )
+
+        with patch('lookups.services.fetch_name_address_lookup') as fetch:
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': ' Evencio   Pena ', 'address_or_zip': '02118'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['source'], 'cache')
+        self.assertEqual(response.data['query']['zipcode'], '02118')
+        fetch.assert_not_called()
+
+    def test_name_address_lookup_sends_address_payload_for_non_zip_location(self):
+        with patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch:
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'Evencio Pena', 'address_or_zip': 'Boston, MA'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        cache = NameAddrLookupCache.objects.first()
+        self.assertEqual(cache.address, 'Boston, MA')
+        self.assertEqual(cache.zipcode, '')
+        self.assertEqual(cache.location_normalized, 'address:boston, ma')
+        fetch.assert_called_once_with('Evencio', 'Pena', 'Boston, MA', '')
+
+    def test_name_address_lookup_rejects_missing_last_name(self):
+        response = self.client.post(
+            '/api/v1/lookups/name-address/',
+            {'full_name': 'Evencio', 'address_or_zip': '02118'},
             format='json',
             HTTP_HOST='localhost',
         )

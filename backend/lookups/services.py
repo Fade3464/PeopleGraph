@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 from django.db import transaction
 from django.utils import timezone
 
-from .models import BlacklistLookupCache, PhoneLookupCache
+from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupCache
 
 
 class LookupError(Exception):
@@ -20,6 +20,10 @@ class UpstreamLookupError(LookupError):
 
 
 class InvalidPhoneError(LookupError):
+    pass
+
+
+class InvalidNameAddressError(LookupError):
     pass
 
 
@@ -35,6 +39,44 @@ def normalize_phone(phone_number: str) -> tuple[str, str]:
     normalized = f'+1{digits}'
     display = f'({digits[0:3]}) {digits[3:6]}-{digits[6:10]}'
     return normalized, display
+
+
+def normalize_name_address(full_name: str, address_or_zip: str) -> dict[str, str]:
+    cleaned_name = re.sub(r'\s+', ' ', full_name or '').strip()
+    cleaned_location = re.sub(r'\s+', ' ', address_or_zip or '').strip()
+
+    if not cleaned_name:
+        raise InvalidNameAddressError('Enter a full name to start a lookup.')
+
+    name_parts = cleaned_name.split(' ', 1)
+    if len(name_parts) < 2 or not name_parts[1].strip():
+        raise InvalidNameAddressError('Enter both first and last name.')
+
+    if not cleaned_location:
+        raise InvalidNameAddressError('Enter an address or zip code.')
+
+    first_name = name_parts[0].strip()
+    last_name = name_parts[1].strip()
+    zipcode = cleaned_location if re.fullmatch(r'\d{5}(?:-\d{4})?', cleaned_location) else ''
+    address = '' if zipcode else cleaned_location
+    first_name_normalized = normalize_text(first_name)
+    last_name_normalized = normalize_text(last_name)
+    location_normalized = f'zip:{zipcode.lower()}' if zipcode else f'address:{normalize_text(address)}'
+
+    return {
+        'first_name': first_name,
+        'last_name': last_name,
+        'full_name': cleaned_name,
+        'address': address,
+        'zipcode': zipcode,
+        'first_name_normalized': first_name_normalized,
+        'last_name_normalized': last_name_normalized,
+        'location_normalized': location_normalized,
+    }
+
+
+def normalize_text(value: str) -> str:
+    return re.sub(r'\s+', ' ', value or '').strip().lower()
 
 
 def lookup_phone(phone_number: str) -> dict[str, Any]:
@@ -54,6 +96,27 @@ def lookup_phone(phone_number: str) -> dict[str, Any]:
     return response
 
 
+def lookup_name_address(full_name: str, address_or_zip: str) -> dict[str, Any]:
+    normalized = normalize_name_address(full_name, address_or_zip)
+    cached = NameAddrLookupCache.objects.filter(
+        first_name_normalized=normalized['first_name_normalized'],
+        last_name_normalized=normalized['last_name_normalized'],
+        location_normalized=normalized['location_normalized'],
+    ).first()
+
+    if cached:
+        return build_name_address_response(cached, source='cache')
+
+    upstream_response = fetch_name_address_lookup(
+        normalized['first_name'],
+        normalized['last_name'],
+        normalized['address'],
+        normalized['zipcode'],
+    )
+    cache = persist_name_address_lookup(normalized, upstream_response)
+    return build_name_address_response(cache, source='upstream')
+
+
 def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
     api_key = os.environ.get('CALLLOOM_API_KEY')
     if not api_key:
@@ -65,6 +128,52 @@ def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
     )
     timeout = float(os.environ.get('CALLLOOM_TIMEOUT_SECONDS', '20'))
     payload = json.dumps({'phone_number': phone_digits}).encode('utf-8')
+    request = Request(
+        endpoint,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'X-API-Key': api_key,
+        },
+        method='POST',
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode('utf-8')
+            return json.loads(body)
+    except HTTPError as exc:
+        body = exc.read().decode('utf-8', errors='replace')
+        raise UpstreamLookupError(f'Lookup provider returned {exc.code}: {body[:240]}') from exc
+    except (URLError, TimeoutError) as exc:
+        raise UpstreamLookupError('Lookup provider is unavailable. Please try again.') from exc
+    except json.JSONDecodeError as exc:
+        raise UpstreamLookupError('Lookup provider returned an invalid response.') from exc
+
+
+def fetch_name_address_lookup(first_name: str, last_name: str, address: str, zipcode: str) -> dict[str, Any]:
+    api_key = os.environ.get('CALLLOOM_API_KEY')
+    if not api_key:
+        raise UpstreamLookupError('CALLLOOM_API_KEY is not configured.')
+
+    endpoint = os.environ.get(
+        'CALLLOOM_NAME_ADDR_LOOKUP_URL',
+        os.environ.get(
+            'CALLLOOM_PHONE_LOOKUP_URL',
+            'https://api.callloom.com/api/people-lookup/get-phone-lookup/',
+        ),
+    )
+    timeout = float(os.environ.get('CALLLOOM_TIMEOUT_SECONDS', '20'))
+    payload_data = {
+        'first_name': first_name,
+        'last_name': last_name,
+    }
+    if zipcode:
+        payload_data['zip_code'] = zipcode
+    else:
+        payload_data['address'] = address
+
+    payload = json.dumps(payload_data).encode('utf-8')
     request = Request(
         endpoint,
         data=payload,
@@ -196,6 +305,30 @@ def persist_blacklist_lookup(
     return cache
 
 
+@transaction.atomic
+def persist_name_address_lookup(
+    normalized: dict[str, str],
+    response: dict[str, Any],
+) -> NameAddrLookupCache:
+    persons = response.get('data', {}).get('persons', [])
+    cache, _ = NameAddrLookupCache.objects.update_or_create(
+        first_name_normalized=normalized['first_name_normalized'],
+        last_name_normalized=normalized['last_name_normalized'],
+        location_normalized=normalized['location_normalized'],
+        defaults={
+            'address': normalized['address'],
+            'zipcode': normalized['zipcode'],
+            'full_name': normalized['full_name'],
+            'status': str(response.get('status', 'unknown')),
+            'message': str(response.get('message', '')),
+            'result_count': len(persons),
+            'raw_response': response,
+            'updated_at': timezone.now(),
+        },
+    )
+    return cache
+
+
 def build_lookup_response(cache: PhoneLookupCache, source: str) -> dict[str, Any]:
     raw_response = cache.raw_response or {}
     persons = raw_response.get('data', {}).get('persons', [])
@@ -208,6 +341,31 @@ def build_lookup_response(cache: PhoneLookupCache, source: str) -> dict[str, Any
         'query': {
             'phone_number': cache.display_phone,
             'normalized_phone': cache.normalized_phone,
+        },
+        'data': {
+            'persons': [serialize_person(person) for person in persons],
+            'pagination': pagination,
+            'result_count': cache.result_count,
+        },
+    }
+
+
+def build_name_address_response(cache: NameAddrLookupCache, source: str) -> dict[str, Any]:
+    raw_response = cache.raw_response or {}
+    persons = raw_response.get('data', {}).get('persons', [])
+    pagination = raw_response.get('data', {}).get('pagination', {})
+
+    return {
+        'status': cache.status,
+        'message': cache.message,
+        'source': source,
+        'query': {
+            'full_name': cache.full_name,
+            'first_name': cache.first_name_normalized,
+            'last_name': cache.last_name_normalized,
+            'address': cache.address,
+            'zipcode': cache.zipcode,
+            'location_key': cache.location_normalized,
         },
         'data': {
             'persons': [serialize_person(person) for person in persons],

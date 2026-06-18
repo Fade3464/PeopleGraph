@@ -3,7 +3,7 @@ from rest_framework import status
 from rest_framework.views import APIView
 
 from .models import PhoneLookupAudit
-from .services import InvalidPhoneError, UpstreamLookupError, lookup_phone
+from .services import InvalidNameAddressError, InvalidPhoneError, UpstreamLookupError, lookup_name_address, lookup_phone
 
 
 class HealthCheckView(APIView):
@@ -46,6 +46,30 @@ class PhoneLookupView(APIView):
             fetched_from_bla_cache=result.get('blacklist', {}).get('source') == 'cache',
             public_ip=get_public_ip(request),
         )
+
+        return Response(result)
+
+
+class NameAddressLookupView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        full_name = request.data.get('full_name', '')
+        address_or_zip = request.data.get('address_or_zip', '')
+
+        try:
+            result = lookup_name_address(full_name, address_or_zip)
+        except InvalidNameAddressError as exc:
+            return Response(
+                {'status': 'error', 'message': str(exc), 'data': {'persons': []}},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except UpstreamLookupError as exc:
+            return Response(
+                {'status': 'error', 'message': str(exc), 'data': {'persons': []}},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
 
         return Response(result)
 
