@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupAudit, PhoneLookupCache
@@ -85,14 +86,16 @@ class HealthCheckTests(APITestCase):
 
 
 class PhoneLookupTests(APITestCase):
+    @override_settings(TRUST_X_FORWARDED_FOR=True)
     def test_phone_lookup_fetches_and_caches_upstream_response(self):
         with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}) as turnstile,
             patch('lookups.services.fetch_phone_lookup', return_value=SAMPLE_RESPONSE) as fetch,
             patch('lookups.services.fetch_blacklist_lookup', return_value=SAMPLE_BLACKLIST_RESPONSE) as blacklist_fetch,
         ):
             response = self.client.post(
                 '/api/v1/lookups/phone/',
-                {'phone_number': '(617) 541-2753'},
+                {'phone_number': '(617) 541-2753', 'turnstile_token': 'test-token'},
                 format='json',
                 HTTP_HOST='localhost',
                 HTTP_X_FORWARDED_FOR='203.0.113.10, 10.0.0.1',
@@ -114,6 +117,7 @@ class PhoneLookupTests(APITestCase):
         self.assertFalse(audit.fetched_from_dbcache)
         self.assertFalse(audit.fetched_from_bla_cache)
         self.assertEqual(audit.public_ip, '203.0.113.10')
+        turnstile.assert_called_once_with('test-token', '203.0.113.10')
         fetch.assert_called_once_with('6175412753')
         blacklist_fetch.assert_called_once_with('6175412753')
 
@@ -140,12 +144,13 @@ class PhoneLookupTests(APITestCase):
         )
 
         with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
             patch('lookups.services.fetch_phone_lookup') as fetch,
             patch('lookups.services.fetch_blacklist_lookup') as blacklist_fetch,
         ):
             response = self.client.post(
                 '/api/v1/lookups/phone/',
-                {'phone_number': '6175412753'},
+                {'phone_number': '6175412753', 'turnstile_token': 'test-token'},
                 format='json',
                 HTTP_HOST='localhost',
                 REMOTE_ADDR='198.51.100.24',
@@ -163,25 +168,61 @@ class PhoneLookupTests(APITestCase):
         blacklist_fetch.assert_not_called()
 
     def test_phone_lookup_rejects_invalid_phone(self):
+        with patch('lookups.views.validate_turnstile_token', return_value={'success': True}):
+            response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '123', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+
+    def test_phone_lookup_does_not_trust_forwarded_ip_by_default(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}) as turnstile,
+            patch('lookups.services.fetch_phone_lookup', return_value=SAMPLE_RESPONSE),
+            patch('lookups.services.fetch_blacklist_lookup', return_value=SAMPLE_BLACKLIST_RESPONSE),
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '(617) 541-2753', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+                HTTP_X_FORWARDED_FOR='203.0.113.10',
+                REMOTE_ADDR='198.51.100.24',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        audit = PhoneLookupAudit.objects.first()
+        self.assertEqual(audit.public_ip, '198.51.100.24')
+        turnstile.assert_called_once_with('test-token', '198.51.100.24')
+
+    def test_phone_lookup_rejects_missing_turnstile_token(self):
         response = self.client.post(
             '/api/v1/lookups/phone/',
-            {'phone_number': '123'},
+            {'phone_number': '6175412753'},
             format='json',
             HTTP_HOST='localhost',
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data['status'], 'error')
 
 
 class NameAddressLookupTests(APITestCase):
     def test_name_address_lookup_fetches_and_caches_upstream_response(self):
-        with patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch:
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}) as turnstile,
+            patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch,
+        ):
             response = self.client.post(
                 '/api/v1/lookups/name-address/',
-                {'full_name': 'Evencio Pena', 'address_or_zip': '02118'},
+                {'full_name': 'Evencio Pena', 'address_or_zip': '02118', 'turnstile_token': 'name-token'},
                 format='json',
                 HTTP_HOST='localhost',
+                REMOTE_ADDR='198.51.100.15',
             )
 
         self.assertEqual(response.status_code, 200)
@@ -194,6 +235,7 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(cache.first_name_normalized, 'evencio')
         self.assertEqual(cache.last_name_normalized, 'pena')
         self.assertEqual(cache.location_normalized, 'zip:02118')
+        turnstile.assert_called_once_with('name-token', '198.51.100.15')
         fetch.assert_called_once_with('Evencio', 'Pena', '', '02118')
 
     def test_name_address_lookup_uses_cache_when_available(self):
@@ -210,10 +252,13 @@ class NameAddressLookupTests(APITestCase):
             raw_response=SAMPLE_RESPONSE,
         )
 
-        with patch('lookups.services.fetch_name_address_lookup') as fetch:
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as fetch,
+        ):
             response = self.client.post(
                 '/api/v1/lookups/name-address/',
-                {'full_name': ' Evencio   Pena ', 'address_or_zip': '02118'},
+                {'full_name': ' Evencio   Pena ', 'address_or_zip': '02118', 'turnstile_token': 'test-token'},
                 format='json',
                 HTTP_HOST='localhost',
             )
@@ -224,10 +269,13 @@ class NameAddressLookupTests(APITestCase):
         fetch.assert_not_called()
 
     def test_name_address_lookup_sends_address_payload_for_non_zip_location(self):
-        with patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch:
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup', return_value=SAMPLE_RESPONSE) as fetch,
+        ):
             response = self.client.post(
                 '/api/v1/lookups/name-address/',
-                {'full_name': 'Evencio Pena', 'address_or_zip': 'Boston, MA'},
+                {'full_name': 'Evencio Pena', 'address_or_zip': 'Boston, MA', 'turnstile_token': 'test-token'},
                 format='json',
                 HTTP_HOST='localhost',
             )
@@ -240,12 +288,40 @@ class NameAddressLookupTests(APITestCase):
         fetch.assert_called_once_with('Evencio', 'Pena', 'Boston, MA', '')
 
     def test_name_address_lookup_rejects_missing_last_name(self):
+        with patch('lookups.views.validate_turnstile_token', return_value={'success': True}):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'Evencio', 'address_or_zip': '02118', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+
+    def test_name_address_lookup_rejects_overlong_location(self):
+        with patch('lookups.views.validate_turnstile_token', return_value={'success': True}):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {
+                    'full_name': 'Evencio Pena',
+                    'address_or_zip': 'A' * 256,
+                    'turnstile_token': 'test-token',
+                },
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+
+    def test_name_address_lookup_rejects_missing_turnstile_token(self):
         response = self.client.post(
             '/api/v1/lookups/name-address/',
-            {'full_name': 'Evencio', 'address_or_zip': '02118'},
+            {'full_name': 'Evencio Pena', 'address_or_zip': '02118'},
             format='json',
             HTTP_HOST='localhost',
         )
 
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data['status'], 'error')

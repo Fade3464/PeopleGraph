@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 import os
 
+from django.core.exceptions import ImproperlyConfigured
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -32,6 +34,17 @@ def load_env_file(path):
 load_env_file(BASE_DIR / '.env')
 
 
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_list(name, default=''):
+    return [item.strip() for item in os.environ.get(name, default).split(',') if item.strip()]
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -42,9 +55,25 @@ SECRET_KEY = os.environ.get(
 )
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.environ.get('DJANGO_DEBUG', 'True') == 'True'
+DEBUG = env_bool('DJANGO_DEBUG', True)
 
-ALLOWED_HOSTS = os.environ.get('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
+ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1')
+
+if not DEBUG:
+    if SECRET_KEY.startswith('django-insecure-'):
+        raise ImproperlyConfigured('DJANGO_SECRET_KEY must be set to a strong secret in production.')
+    if not ALLOWED_HOSTS:
+        raise ImproperlyConfigured('DJANGO_ALLOWED_HOSTS must be set in production.')
+    required_production_env = [
+        'CALLLOOM_API_KEY',
+        'TCPA_BLACKLIST_API_KEY',
+        'TURNSTILE_SECRET_KEY',
+    ]
+    missing_env = [name for name in required_production_env if not os.environ.get(name)]
+    if missing_env:
+        raise ImproperlyConfigured(f'Missing required production environment variables: {", ".join(missing_env)}')
+    if os.environ.get('TURNSTILE_SECRET_KEY', '').startswith('1x000000'):
+        raise ImproperlyConfigured('TURNSTILE_SECRET_KEY must be a real Cloudflare Turnstile secret in production.')
 
 
 # Application definition
@@ -157,10 +186,48 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOWED_ORIGINS = os.environ.get(
+CORS_ALLOWED_ORIGINS = env_list(
     'DJANGO_CORS_ALLOWED_ORIGINS',
     'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001',
-).split(',')
+)
+CORS_ALLOW_CREDENTIALS = False
+
+CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS')
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get('DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE', '1048576'))
+FILE_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get('DJANGO_FILE_UPLOAD_MAX_MEMORY_SIZE', '1048576'))
+
+SECURE_SSL_REDIRECT = env_bool('DJANGO_SECURE_SSL_REDIRECT', not DEBUG)
+SESSION_COOKIE_SECURE = env_bool('DJANGO_SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('DJANGO_CSRF_COOKIE_SECURE', not DEBUG)
+SECURE_HSTS_SECONDS = int(os.environ.get('DJANGO_SECURE_HSTS_SECONDS', '0' if DEBUG else '31536000'))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool('DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS', not DEBUG)
+SECURE_HSTS_PRELOAD = env_bool('DJANGO_SECURE_HSTS_PRELOAD', False)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+REFERRER_POLICY = os.environ.get('DJANGO_REFERRER_POLICY', 'strict-origin-when-cross-origin')
+
+if env_bool('DJANGO_TRUST_PROXY_HEADERS', False):
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+TRUST_X_FORWARDED_FOR = env_bool('DJANGO_TRUST_X_FORWARDED_FOR', False)
+
+ADMIN_URL_PATH = os.environ.get('DJANGO_ADMIN_URL_PATH', 'admin/').strip() or 'admin/'
+if not ADMIN_URL_PATH.endswith('/'):
+    ADMIN_URL_PATH = f'{ADMIN_URL_PATH}/'
+
+if not DEBUG and ADMIN_URL_PATH == 'admin/':
+    raise ImproperlyConfigured('Set DJANGO_ADMIN_URL_PATH to a non-default path in production.')
+
+if not DEBUG and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured('DJANGO_CORS_ALLOWED_ORIGINS must be set in production.')
+
+if not DEBUG and any(origin.startswith('http://') for origin in CORS_ALLOWED_ORIGINS):
+    raise ImproperlyConfigured('Production CORS origins must use HTTPS.')
+
+LOOKUP_THROTTLE_RATE = os.environ.get('LOOKUP_THROTTLE_RATE', '30/min')
+
+CORS_ALLOWED_ORIGINS = CORS_ALLOWED_ORIGINS
 
 REST_FRAMEWORK = {
     'DEFAULT_RENDERER_CLASSES': [
@@ -169,4 +236,10 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
     ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'lookup': LOOKUP_THROTTLE_RATE,
+    },
 }

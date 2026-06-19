@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -9,6 +10,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupCache
+
+
+MAX_TURNSTILE_TOKEN_LENGTH = 2048
+MAX_FULL_NAME_LENGTH = 255
+MAX_LOCATION_LENGTH = 255
 
 
 class LookupError(Exception):
@@ -25,6 +31,63 @@ class InvalidPhoneError(LookupError):
 
 class InvalidNameAddressError(LookupError):
     pass
+
+
+class TurnstileValidationError(LookupError):
+    pass
+
+
+def validate_turnstile_token(token: str, remote_ip: str | None = None) -> dict[str, Any]:
+    cleaned_token = (token or '').strip()
+    if not cleaned_token:
+        raise TurnstileValidationError('Complete the security check before searching.')
+
+    if len(cleaned_token) > MAX_TURNSTILE_TOKEN_LENGTH:
+        raise TurnstileValidationError('Security verification failed. Please try again.')
+
+    secret_key = os.environ.get('TURNSTILE_SECRET_KEY')
+    if not secret_key:
+        raise TurnstileValidationError('Turnstile is not configured on the server.')
+
+    endpoint = os.environ.get(
+        'TURNSTILE_SITEVERIFY_URL',
+        'https://challenges.cloudflare.com/turnstile/v0/siteverify',
+    )
+    timeout = float(os.environ.get('TURNSTILE_TIMEOUT_SECONDS', '10'))
+    payload_data = {
+        'secret': secret_key,
+        'response': cleaned_token,
+        'idempotency_key': str(uuid.uuid4()),
+    }
+    if remote_ip:
+        payload_data['remoteip'] = remote_ip
+
+    payload = json.dumps(payload_data).encode('utf-8')
+    request = Request(
+        endpoint,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+        },
+        method='POST',
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode('utf-8')
+            verification = json.loads(body)
+    except HTTPError as exc:
+        exc.read()
+        raise TurnstileValidationError('Security verification failed. Please try again.') from exc
+    except (URLError, TimeoutError) as exc:
+        raise TurnstileValidationError('Security verification is unavailable. Please try again.') from exc
+    except json.JSONDecodeError as exc:
+        raise TurnstileValidationError('Security verification returned an invalid response.') from exc
+
+    if not verification.get('success'):
+        raise TurnstileValidationError('Security verification failed. Please try again.')
+
+    return verification
 
 
 def normalize_phone(phone_number: str) -> tuple[str, str]:
@@ -48,12 +111,18 @@ def normalize_name_address(full_name: str, address_or_zip: str) -> dict[str, str
     if not cleaned_name:
         raise InvalidNameAddressError('Enter a full name to start a lookup.')
 
+    if len(cleaned_name) > MAX_FULL_NAME_LENGTH:
+        raise InvalidNameAddressError('Full name is too long.')
+
     name_parts = cleaned_name.split(' ', 1)
     if len(name_parts) < 2 or not name_parts[1].strip():
         raise InvalidNameAddressError('Enter both first and last name.')
 
     if not cleaned_location:
         raise InvalidNameAddressError('Enter an address or zip code.')
+
+    if len(cleaned_location) > MAX_LOCATION_LENGTH:
+        raise InvalidNameAddressError('Address or zip code is too long.')
 
     first_name = name_parts[0].strip()
     last_name = name_parts[1].strip()
@@ -143,8 +212,8 @@ def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
             body = response.read().decode('utf-8')
             return json.loads(body)
     except HTTPError as exc:
-        body = exc.read().decode('utf-8', errors='replace')
-        raise UpstreamLookupError(f'Lookup provider returned {exc.code}: {body[:240]}') from exc
+        exc.read()
+        raise UpstreamLookupError(f'Lookup provider returned {exc.code}.') from exc
     except (URLError, TimeoutError) as exc:
         raise UpstreamLookupError('Lookup provider is unavailable. Please try again.') from exc
     except json.JSONDecodeError as exc:
@@ -189,8 +258,8 @@ def fetch_name_address_lookup(first_name: str, last_name: str, address: str, zip
             body = response.read().decode('utf-8')
             return json.loads(body)
     except HTTPError as exc:
-        body = exc.read().decode('utf-8', errors='replace')
-        raise UpstreamLookupError(f'Lookup provider returned {exc.code}: {body[:240]}') from exc
+        exc.read()
+        raise UpstreamLookupError(f'Lookup provider returned {exc.code}.') from exc
     except (URLError, TimeoutError) as exc:
         raise UpstreamLookupError('Lookup provider is unavailable. Please try again.') from exc
     except json.JSONDecodeError as exc:
@@ -208,7 +277,7 @@ def lookup_blacklist(phone_digits: str, normalized_phone: str, display_phone: st
     except UpstreamLookupError as exc:
         return {
             'status': 'error',
-            'message': str(exc),
+            'message': 'TCPA blacklist check is temporarily unavailable.',
             'source': 'error',
             'phone_number': display_phone,
             'normalized_phone': normalized_phone,
@@ -250,8 +319,8 @@ def fetch_blacklist_lookup(phone_digits: str) -> dict[str, Any]:
             body = response.read().decode('utf-8')
             return json.loads(body)
     except HTTPError as exc:
-        body = exc.read().decode('utf-8', errors='replace')
-        raise UpstreamLookupError(f'TCPA provider returned {exc.code}: {body[:240]}') from exc
+        exc.read()
+        raise UpstreamLookupError(f'TCPA provider returned {exc.code}.') from exc
     except (URLError, TimeoutError) as exc:
         raise UpstreamLookupError('TCPA provider is unavailable. Please try again.') from exc
     except json.JSONDecodeError as exc:
