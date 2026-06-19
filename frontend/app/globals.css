@@ -60,4 +60,35 @@ body {
   .teal-line {
     background: linear-gradient(90deg, rgba(13, 186, 230, 0), #0dbae6 18%, #1ff0aa 62%, rgba(31, 240, 170, 0));
   }
+
+  .risk-attention-shake {
+    animation: riskAttentionShake 720ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  }
+}
+
+@keyframes riskAttentionShake {
+  0%,
+  100% {
+    transform: translateX(0);
+    box-shadow: 0 18px 70px rgba(0, 0, 0, 0.34);
+  }
+
+  12%,
+  36%,
+  60% {
+    transform: translateX(-5px);
+  }
+
+  24%,
+  48%,
+  72% {
+    transform: translateX(5px);
+  }
+
+  30%,
+  66% {
+    box-shadow:
+      0 18px 70px rgba(0, 0, 0, 0.34),
+      0 0 34px rgba(251, 191, 36, 0.24);
+  }
 }
