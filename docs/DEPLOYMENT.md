@@ -20,10 +20,10 @@ docker --version
 docker compose version
 ```
 
-Open firewall ports according to your TLS setup:
+Open firewall ports:
 
 - `80/tcp` for HTTP and reverse-proxy health checks
-- `443/tcp` if TLS terminates on this server
+- `443/tcp` for HTTPS
 
 ## 2. DNS and Turnstile
 
@@ -133,6 +133,86 @@ curl -i http://127.0.0.1/api/health/
 curl -i http://127.0.0.1/lookup
 ```
 
+## 7. Issue Let's Encrypt Certificate
+
+Make sure DNS points to this server before running Certbot.
+
+First start the stack with the default HTTP Nginx config:
+
+```bash
+APP_ENV_FILE=.env.production docker compose --env-file .env.production up -d
+```
+
+Issue the certificate. Replace the email and domains:
+
+```bash
+APP_ENV_FILE=.env.production docker compose --env-file .env.production run --rm certbot \
+  certonly \
+  --webroot \
+  --webroot-path /var/www/certbot \
+  --email admin@peoplegraph.co \
+  --agree-tos \
+  --no-eff-email \
+  -d peoplegraph.co \
+  -d www.peoplegraph.co
+```
+
+If the command succeeds, copy the SSL config into place:
+
+```bash
+cp deploy/nginx/ssl.conf.example deploy/nginx/default.conf
+```
+
+Edit `deploy/nginx/default.conf` and verify:
+
+- `server_name` contains your real domains.
+- `ssl_certificate` uses the primary domain Certbot created, for example `/etc/letsencrypt/live/peoplegraph.co/fullchain.pem`.
+- `ssl_certificate_key` uses the same primary domain.
+- `/private-admin-path/` matches `DJANGO_ADMIN_URL_PATH`.
+
+Restart Nginx:
+
+```bash
+APP_ENV_FILE=.env.production docker compose --env-file .env.production restart nginx
+```
+
+Verify HTTPS:
+
+```bash
+curl -I https://peoplegraph.co
+curl -I https://peoplegraph.co/api/health/
+```
+
+After HTTPS works, set these in `.env.production` if they are not already enabled:
+
+```text
+DJANGO_SECURE_SSL_REDIRECT=True
+DJANGO_TRUST_PROXY_HEADERS=True
+DJANGO_TRUST_X_FORWARDED_FOR=True
+```
+
+Then recreate backend:
+
+```bash
+APP_ENV_FILE=.env.production docker compose --env-file .env.production up -d backend nginx
+```
+
+## 8. Certificate Renewal
+
+Test renewal:
+
+```bash
+APP_ENV_FILE=.env.production docker compose --env-file .env.production run --rm certbot renew --dry-run
+```
+
+Add this host cron entry for automatic renewal:
+
+```cron
+0 3 * * * cd /srv/peoplegraph/PeopleGraph && APP_ENV_FILE=.env.production docker compose --env-file .env.production run --rm certbot renew --quiet && APP_ENV_FILE=.env.production docker compose --env-file .env.production exec nginx nginx -s reload
+```
+
+Adjust `/srv/peoplegraph/PeopleGraph` if your project path is different.
+
 With DNS/TLS configured:
 
 ```bash
@@ -140,7 +220,7 @@ curl -i https://peoplegraph.co/api/health/
 curl -i https://peoplegraph.co/lookup
 ```
 
-## 7. Production Security Checks
+## 9. Production Security Checks
 
 Run before launch:
 
@@ -166,7 +246,7 @@ curl -i -X POST https://peoplegraph.co/api/v1/lookups/phone/ \
 
 Expected HTTP status: `403`.
 
-## 8. Update Deployment
+## 10. Update Deployment
 
 Pull or copy the new source to the server, then:
 
@@ -182,7 +262,7 @@ Remove old unused image layers periodically:
 docker image prune
 ```
 
-## 9. Database Backup and Restore
+## 11. Database Backup and Restore
 
 Backup:
 
@@ -200,7 +280,7 @@ docker compose --env-file .env.production exec -T db \
 
 Keep backups off-server as well. The Docker volume is persistent, but it is not a backup.
 
-## 10. Operational Notes
+## 12. Operational Notes
 
 - Do not commit `.env.production`.
 - Do not expose PostgreSQL to the public internet.
