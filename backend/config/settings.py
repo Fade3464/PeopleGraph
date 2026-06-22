@@ -72,6 +72,13 @@ if not DEBUG:
     missing_env = [name for name in required_production_env if not os.environ.get(name)]
     if missing_env:
         raise ImproperlyConfigured(f'Missing required production environment variables: {", ".join(missing_env)}')
+    placeholder_env = [
+        name for name in required_production_env if os.environ.get(name, '').startswith('replace-with-')
+    ]
+    if placeholder_env:
+        raise ImproperlyConfigured(
+            f'Replace placeholder production environment variables: {", ".join(placeholder_env)}'
+        )
     if os.environ.get('TURNSTILE_SECRET_KEY', '').startswith('1x000000'):
         raise ImproperlyConfigured('TURNSTILE_SECRET_KEY must be a real Cloudflare Turnstile secret in production.')
 
@@ -92,6 +99,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -179,7 +187,13 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = os.environ.get('DJANGO_STATIC_URL', 'django-static/')
+STATIC_ROOT = os.environ.get('DJANGO_STATIC_ROOT', BASE_DIR / 'staticfiles')
+STORAGES = {
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

@@ -247,6 +247,31 @@ cd backend && python -m pip_audit -r requirements.txt
 
 The frontend sets security headers in `next.config.ts`, including CSP allowances for Cloudflare Turnstile. Keep `NEXT_PUBLIC_API_BASE_URL` pointed at the production API origin before building the production frontend.
 
+## Docker Deployment
+
+Production Docker assets are included:
+
+- `docker-compose.yml` - PostgreSQL, Django/Gunicorn, Next.js standalone, and Nginx
+- `.env.production.example` - production environment template
+- `backend/Dockerfile` - Django runtime image
+- `frontend/Dockerfile` - Next.js standalone image
+- `deploy/nginx/default.conf` - reverse proxy routes
+
+Deployment procedure:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+docker compose --env-file .env.production build
+docker compose --env-file .env.production up -d
+```
+
+Read the full deployment guide before production launch:
+
+```text
+docs/DEPLOYMENT.md
+```
+
 ## Notes
 
 Phone search includes people-result caching, TCPA blacklist caching, and audit logging. Name/address search uses the same CallLoom result layout and caches exact normalized name plus zip/address queries for fast repeat searches.
