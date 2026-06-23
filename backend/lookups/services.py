@@ -15,6 +15,9 @@ from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupCache
 MAX_TURNSTILE_TOKEN_LENGTH = 2048
 MAX_FULL_NAME_LENGTH = 255
 MAX_LOCATION_LENGTH = 255
+NAME_ALLOWED_PATTERN = re.compile(r"^[A-Za-z][A-Za-z .'\-]*$")
+LOCATION_ALLOWED_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,#'\-/]*$")
+CONTROL_CHARACTER_PATTERN = re.compile(r'[\x00-\x1f\x7f]')
 
 
 class LookupError(Exception):
@@ -114,6 +117,12 @@ def normalize_name_address(full_name: str, address_or_zip: str) -> dict[str, str
     if len(cleaned_name) > MAX_FULL_NAME_LENGTH:
         raise InvalidNameAddressError('Full name is too long.')
 
+    if CONTROL_CHARACTER_PATTERN.search(cleaned_name):
+        raise InvalidNameAddressError('Full name contains invalid characters.')
+
+    if not NAME_ALLOWED_PATTERN.fullmatch(cleaned_name):
+        raise InvalidNameAddressError('Full name contains invalid characters.')
+
     name_parts = cleaned_name.split(' ', 1)
     if len(name_parts) < 2 or not name_parts[1].strip():
         raise InvalidNameAddressError('Enter both first and last name.')
@@ -123,6 +132,12 @@ def normalize_name_address(full_name: str, address_or_zip: str) -> dict[str, str
 
     if len(cleaned_location) > MAX_LOCATION_LENGTH:
         raise InvalidNameAddressError('Address or zip code is too long.')
+
+    if CONTROL_CHARACTER_PATTERN.search(cleaned_location):
+        raise InvalidNameAddressError('Address or zip code contains invalid characters.')
+
+    if not LOCATION_ALLOWED_PATTERN.fullmatch(cleaned_location):
+        raise InvalidNameAddressError('Address or zip code contains invalid characters.')
 
     first_name = name_parts[0].strip()
     last_name = name_parts[1].strip()

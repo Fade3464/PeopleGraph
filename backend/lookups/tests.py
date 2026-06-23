@@ -299,6 +299,58 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['status'], 'error')
 
+    def test_name_address_lookup_rejects_invalid_name_characters(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'Evencio <script>', 'address_or_zip': '02118', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+        fetch.assert_not_called()
+
+    def test_name_address_lookup_rejects_numeric_name(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'Evencio123 Pena', 'address_or_zip': '02118', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+        fetch.assert_not_called()
+
+    def test_name_address_lookup_rejects_invalid_location_characters(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {
+                    'full_name': 'Evencio Pena',
+                    'address_or_zip': '<script>alert(1)</script>',
+                    'turnstile_token': 'test-token',
+                },
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['status'], 'error')
+        fetch.assert_not_called()
+
     def test_name_address_lookup_rejects_overlong_location(self):
         with patch('lookups.views.validate_turnstile_token', return_value={'success': True}):
             response = self.client.post(
