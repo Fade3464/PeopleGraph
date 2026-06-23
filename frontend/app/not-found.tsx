@@ -68,14 +68,6 @@ export default function NotFound() {
             <div className="absolute bottom-12 right-8 h-2 w-2 rounded-full bg-cyan-300 shadow-[0_0_24px_rgba(13,186,230,0.9)]" />
           </div>
         </div>
-
-        <Link
-          href="/"
-          className="mb-2 inline-flex w-fit items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-primary"
-        >
-          <ArrowLeft className="size-4" />
-          Return to landing page
-        </Link>
       </section>
     </main>
   );
