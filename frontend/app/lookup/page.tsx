@@ -501,6 +501,12 @@ export default function HomePage() {
             registerTurnstileReset={registerTurnstileReset}
           />
 
+          {activeLookup.state !== "results" && activeLookup.blacklist ? (
+            <section className="mt-6">
+              <BlacklistPanel blacklist={activeLookup.blacklist} />
+            </section>
+          ) : null}
+
           {activeLookup.state === "results" ? (
             <ResultsList
               people={activeLookup.results}
