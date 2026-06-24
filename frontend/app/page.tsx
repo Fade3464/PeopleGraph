@@ -200,17 +200,6 @@ function LandingNav() {
           </div>
           <span className="text-xl font-extrabold">PeopleGraph</span>
         </Link>
-        <nav className="ml-auto hidden items-center gap-6 text-sm font-semibold text-muted-foreground md:flex">
-          <a className="transition-colors hover:text-foreground" href="#overview">
-            Overview
-          </a>
-        </nav>
-        <Button asChild size="sm" className="ml-auto md:ml-0">
-          <Link href="/lookup">
-            Launch
-            <ArrowRight />
-          </Link>
-        </Button>
       </div>
     </header>
   );
@@ -234,10 +223,6 @@ function ProductScene() {
             <span className="size-2.5 rounded-full bg-primary" />
             <span className="size-2.5 rounded-full bg-cyan-400" />
             <span className="size-2.5 rounded-full bg-zinc-500" />
-          </div>
-          <div className="hidden items-center gap-2 rounded-md border border-white/10 bg-white/6 px-3 py-1.5 text-xs text-muted-foreground sm:flex">
-            <LockKeyhole className="size-3.5" />
-            Secure search workspace
           </div>
         </div>
 

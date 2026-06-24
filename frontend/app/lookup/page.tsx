@@ -1106,7 +1106,7 @@ function SearchPanel(props: SearchPanelProps) {
   "pl-11 text-base",
   feedbackMessage && isErrorFeedback && "border-rose-400/70",
 )}
-                placeholder="Enter phone number, e.g. 617-541-2753"
+                placeholder="Enter phone number"
                 inputMode="tel"
                 autoComplete="tel"
                 aria-invalid={Boolean(feedbackMessage && isErrorFeedback)}
