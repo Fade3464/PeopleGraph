@@ -3,6 +3,7 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import Client, TestCase
 from django.utils import timezone
 
@@ -11,6 +12,9 @@ from lookups.models import PhoneLookupAudit, PhoneLookupCache
 
 
 class FeedbackTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
     def test_public_feedback_submission_creates_unread_feedback(self):
         response = self.client.post(
             '/api/v1/auth/feedback/',
@@ -47,6 +51,42 @@ class FeedbackTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(Feedback.objects.count(), 0)
+
+    def test_feedback_submission_rejects_untrusted_origin(self):
+        response = self.client.post(
+            '/api/v1/auth/feedback/',
+            data=json.dumps({'experience': 'Good', 'areas': ['Speed'], 'details': 'Useful feedback'}),
+            content_type='application/json',
+            HTTP_ORIGIN='https://malicious.example',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(Feedback.objects.count(), 0)
+
+    def test_feedback_submission_is_rate_limited_by_ip(self):
+        payload = {
+            'experience': 'Good',
+            'areas': ['Speed'],
+            'details': 'Useful feedback',
+        }
+
+        for _ in range(5):
+            response = self.client.post(
+                '/api/v1/auth/feedback/',
+                data=json.dumps(payload),
+                content_type='application/json',
+                REMOTE_ADDR='198.51.100.10',
+            )
+            self.assertEqual(response.status_code, 201)
+
+        response = self.client.post(
+            '/api/v1/auth/feedback/',
+            data=json.dumps(payload),
+            content_type='application/json',
+            REMOTE_ADDR='198.51.100.10',
+        )
+
+        self.assertEqual(response.status_code, 429)
 
     def test_staff_can_list_and_mark_feedback_as_read(self):
         User = get_user_model()
@@ -106,7 +146,7 @@ class ExportLookupResultsTests(TestCase):
                 'data': {
                     'persons': [
                         {
-                            'first_name': 'Frances',
+                            'first_name': '=Frances',
                             'middle_name': 'J',
                             'last_name': 'Block',
                             'age': 88,
@@ -141,10 +181,12 @@ class ExportLookupResultsTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Content-Type'], 'text/csv')
+        self.assertIn('no-store', response['Cache-Control'])
         body = response.content.decode('utf-8')
-        self.assertIn('Frances J Block', body)
+        self.assertIn("'=Frances J Block", body)
         self.assertIn('88', body)
         self.assertIn('(781) 401-3217', body)
+        self.assertIn("'+17814013217", body)
         self.assertIn('Jamie F Cook', body)
         self.assertIn('35', body)
         self.assertIn('(781) 294-4711', body)
@@ -158,3 +200,26 @@ class ExportLookupResultsTests(TestCase):
         response = client.get('/api/v1/auth/exports/lookup-results/')
 
         self.assertEqual(response.status_code, 403)
+
+
+class DashboardSecurityTests(TestCase):
+    def test_non_staff_cannot_access_dashboard(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='user@example.com', password='password')
+        client = Client()
+        client.force_login(user)
+
+        response = client.get('/api/v1/auth/dashboard/phone-lookups/')
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_staff_can_access_dashboard(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
+        client = Client()
+        client.force_login(user)
+
+        response = client.get('/api/v1/auth/dashboard/phone-lookups/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'success')

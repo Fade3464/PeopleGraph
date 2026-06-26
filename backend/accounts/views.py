@@ -2,9 +2,12 @@ import json
 import csv
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone as datetime_timezone
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import authenticate, login, logout
+from django.conf import settings
+from django.core.cache import cache
 from django.db.models import Count
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
@@ -28,6 +31,8 @@ MAX_FEEDBACK_SUGGESTION_LENGTH = 3000
 MAX_FEEDBACK_FIELD_LENGTH = 160
 ALLOWED_EXPERIENCES = {'Excellent', 'Good', 'Average', 'Difficult'}
 ALLOWED_DEVICES = {'Desktop', 'Mobile', 'Tablet'}
+FEEDBACK_RATE_LIMIT = 5
+FEEDBACK_RATE_LIMIT_SECONDS = 10 * 60
 
 
 @require_GET
@@ -145,6 +150,32 @@ def phone_lookup_dashboard(request):
         .order_by('-total_lookups', 'public_ip')[:20]
     )
 
+    return JsonResponse(
+        {
+            'status': 'success',
+            'timezone': 'America/New_York',
+            'range': {
+                'from': from_dt.isoformat(),
+                'to': to_dt.isoformat(),
+                'bucket_minutes': bucket_minutes,
+            },
+            'summary': {
+                'total_lookups': audits.count(),
+                'unique_phone_numbers': audits.values('normalized_phone').distinct().count(),
+                'unique_public_ips': audits.exclude(public_ip__isnull=True).values('public_ip').distinct().count(),
+            },
+            'lookup_counts': buckets,
+            'public_ip_counts': [
+                {
+                    'public_ip': row['public_ip'] or 'Unknown',
+                    'total_lookups': row['total_lookups'],
+                    'unique_phone_numbers': row['unique_phone_numbers'],
+                }
+                for row in public_ip_counts
+            ],
+        }
+    )
+
 
 @require_GET
 @never_cache
@@ -196,6 +227,9 @@ def export_lookup_results(request):
     filename = f'peoplegraph-lookup-results-{from_dt:%Y%m%d%H%M}-{to_dt:%Y%m%d%H%M}.csv'
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = f'attachment; filename="{filename}"'
+    response['Cache-Control'] = 'no-store, max-age=0'
+    response['Pragma'] = 'no-cache'
+    response['X-Content-Type-Options'] = 'nosniff'
 
     writer = csv.writer(response)
     writer.writerow(
@@ -215,7 +249,8 @@ def export_lookup_results(request):
         audit = audit_map.get(cache.normalized_phone, {})
         persons = (cache.raw_response or {}).get('data', {}).get('persons', [])
         if not persons:
-            writer.writerow(
+            write_csv_row(
+                writer,
                 [
                     audit.get('phone_number') or cache.display_phone,
                     cache.normalized_phone,
@@ -231,7 +266,8 @@ def export_lookup_results(request):
 
         for person in persons:
             primary_phone = get_primary_phone_number(person)
-            writer.writerow(
+            write_csv_row(
+                writer,
                 [
                     audit.get('phone_number') or cache.display_phone,
                     cache.normalized_phone,
@@ -246,31 +282,20 @@ def export_lookup_results(request):
 
     return response
 
-    return JsonResponse(
-        {
-            'status': 'success',
-            'timezone': 'America/New_York',
-            'range': {
-                'from': from_dt.isoformat(),
-                'to': to_dt.isoformat(),
-                'bucket_minutes': bucket_minutes,
-            },
-            'summary': {
-                'total_lookups': audits.count(),
-                'unique_phone_numbers': audits.values('normalized_phone').distinct().count(),
-                'unique_public_ips': audits.exclude(public_ip__isnull=True).values('public_ip').distinct().count(),
-            },
-            'lookup_counts': buckets,
-            'public_ip_counts': [
-                {
-                    'public_ip': row['public_ip'] or 'Unknown',
-                    'total_lookups': row['total_lookups'],
-                    'unique_phone_numbers': row['unique_phone_numbers'],
-                }
-                for row in public_ip_counts
-            ],
-        }
-    )
+
+def write_csv_row(writer, row):
+    writer.writerow([safe_csv_value(value) for value in row])
+
+
+def safe_csv_value(value):
+    if value is None:
+        return ''
+
+    text = str(value)
+    if text and text[0] in {'=', '+', '-', '@', '\t', '\r', '\n'}:
+        return f"'{text}"
+
+    return text
 
 
 def parse_new_york_datetime(value, fallback):
@@ -353,6 +378,14 @@ def get_primary_phone_number(person):
 @csrf_exempt
 @never_cache
 def submit_feedback(request):
+    if not request_origin_is_allowed(request):
+        return JsonResponse({'status': 'error', 'message': 'Feedback origin is not allowed.'}, status=403)
+
+    try:
+        enforce_feedback_rate_limit(request)
+    except ValueError as exc:
+        return JsonResponse({'status': 'error', 'message': str(exc)}, status=429)
+
     try:
         payload = json.loads(request.body.decode('utf-8') or '{}')
     except json.JSONDecodeError:
@@ -490,6 +523,36 @@ def clean_text(value, max_length, preserve_newlines=False):
     if len(text) > max_length:
         raise ValueError('One or more fields are too long.')
     return text
+
+
+def enforce_feedback_rate_limit(request):
+    public_ip = get_public_ip(request) or 'unknown'
+    cache_key = f'feedback-rate:{public_ip}'
+
+    if cache.add(cache_key, 1, FEEDBACK_RATE_LIMIT_SECONDS):
+        return
+
+    try:
+        count = cache.incr(cache_key)
+    except ValueError:
+        cache.set(cache_key, 1, FEEDBACK_RATE_LIMIT_SECONDS)
+        return
+
+    if count > FEEDBACK_RATE_LIMIT:
+        raise ValueError('Too many feedback submissions. Please try again later.')
+
+
+def request_origin_is_allowed(request):
+    origin = request.META.get('HTTP_ORIGIN')
+    if not origin:
+        return True
+
+    allowed_origins = set(settings.CSRF_TRUSTED_ORIGINS) | set(settings.CORS_ALLOWED_ORIGINS)
+    if origin in allowed_origins:
+        return True
+
+    parsed = urlparse(origin)
+    return parsed.hostname in settings.ALLOWED_HOSTS
 
 
 def get_public_ip(request):

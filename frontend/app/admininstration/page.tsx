@@ -1170,18 +1170,9 @@ async function refreshCsrfToken() {
   });
 
   const payload = (await response.json().catch(() => null)) as { csrfToken?: string } | null;
-  return payload?.csrfToken || getCookie("csrftoken") || "";
+  return payload?.csrfToken || "";
 }
 
 function getApiBaseUrl() {
   return process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
-}
-
-function getCookie(name: string) {
-  const cookie = document.cookie
-    .split("; ")
-    .find((item) => item.startsWith(`${encodeURIComponent(name)}=`));
-
-  if (!cookie) return "";
-  return decodeURIComponent(cookie.split("=").slice(1).join("="));
 }

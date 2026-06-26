@@ -22,6 +22,8 @@ import { cn } from "@/lib/utils";
 
 const experienceOptions = ["Excellent", "Good", "Average", "Difficult"];
 const feedbackAreas = ["Search flow", "Results layout", "Visual design", "Speed", "Mobile experience", "Other"];
+const feedbackFieldClass =
+  "border-white/10 bg-[#30363c] text-white placeholder:text-zinc-400 shadow-inner focus:border-primary focus:bg-[#343b42] focus:ring-2 focus:ring-primary/25";
 
 export default function FeedbackPage() {
   const [selectedExperience, setSelectedExperience] = useState("Good");
@@ -149,10 +151,16 @@ export default function FeedbackPage() {
 
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Name">
-                    <Input name="name" placeholder="Optional" autoComplete="name" />
+                    <Input name="name" placeholder="Optional" autoComplete="name" className={feedbackFieldClass} />
                   </Field>
                   <Field label="Email">
-                    <Input name="email" type="email" placeholder="Optional" autoComplete="email" />
+                    <Input
+                      name="email"
+                      type="email"
+                      placeholder="Optional"
+                      autoComplete="email"
+                      className={feedbackFieldClass}
+                    />
                   </Field>
                 </div>
 
@@ -200,12 +208,15 @@ export default function FeedbackPage() {
 
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Page or feature">
-                    <Input name="feature" placeholder="e.g. phone search results" />
+                    <Input name="feature" placeholder="e.g. phone search results" className={feedbackFieldClass} />
                   </Field>
                   <Field label="Device">
                     <select
                       name="device"
-                      className="flex h-12 w-full rounded-md border border-input bg-white/8 px-4 py-2 text-sm text-foreground shadow-inner outline-none transition-all focus:border-primary focus:bg-white/10 focus:ring-2 focus:ring-primary/25"
+                      className={cn(
+                        "flex h-12 w-full rounded-md px-4 py-2 text-sm outline-none transition-all",
+                        feedbackFieldClass,
+                      )}
                       defaultValue="Desktop"
                     >
                       <option className="bg-[#101316]">Desktop</option>
@@ -221,7 +232,10 @@ export default function FeedbackPage() {
                     required
                     rows={5}
                     placeholder="Describe the issue, confusion, or improvement idea."
-                    className="w-full resize-y rounded-md border border-input bg-white/8 px-4 py-3 text-sm leading-6 text-foreground shadow-inner outline-none transition-all placeholder:text-muted-foreground focus:border-primary focus:bg-white/10 focus:ring-2 focus:ring-primary/25"
+                    className={cn(
+                      "w-full resize-y rounded-md px-4 py-3 text-sm leading-6 outline-none transition-all",
+                      feedbackFieldClass,
+                    )}
                   />
                 </Field>
 
@@ -230,7 +244,10 @@ export default function FeedbackPage() {
                     name="suggestion"
                     rows={4}
                     placeholder="Optional: share the change you would prefer."
-                    className="w-full resize-y rounded-md border border-input bg-white/8 px-4 py-3 text-sm leading-6 text-foreground shadow-inner outline-none transition-all placeholder:text-muted-foreground focus:border-primary focus:bg-white/10 focus:ring-2 focus:ring-primary/25"
+                    className={cn(
+                      "w-full resize-y rounded-md px-4 py-3 text-sm leading-6 outline-none transition-all",
+                      feedbackFieldClass,
+                    )}
                   />
                 </Field>
 

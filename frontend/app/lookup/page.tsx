@@ -452,6 +452,13 @@ export default function HomePage() {
       <TopNav />
       <TimedToast toast={toast} onClose={closeToast} />
       <LookupLoader isVisible={activeLookup.state === "loading"} />
+      <Link
+        href="/feedback"
+        className="fixed bottom-4 right-4 z-30 inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#151a1f]/90 px-3 py-2 text-xs font-semibold text-muted-foreground shadow-panel backdrop-blur-xl transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:text-primary"
+      >
+        <MessageSquareText className="size-3.5" />
+        Help us improve
+      </Link>
 
       <div
         className="mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-[1480px] transform-gpu justify-center px-3 pb-10 pt-8 will-change-transform sm:px-5 lg:px-8"
@@ -523,15 +530,6 @@ export default function HomePage() {
           ) : null}
         </section>
       </div>
-      <footer className="border-t border-white/10 px-4 py-5 text-center">
-        <Link
-          href="/feedback"
-          className="inline-flex items-center gap-2 text-xs font-semibold text-muted-foreground transition-colors hover:text-primary"
-        >
-          <MessageSquareText className="size-3.5" />
-          Help us improve
-        </Link>
-      </footer>
     </main>
   );
 }
