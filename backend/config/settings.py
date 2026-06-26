@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'corsheaders',
     'rest_framework',
+    'accounts',
     'lookups',
 ]
 
@@ -229,9 +230,6 @@ TRUST_X_FORWARDED_FOR = env_bool('DJANGO_TRUST_X_FORWARDED_FOR', False)
 ADMIN_URL_PATH = os.environ.get('DJANGO_ADMIN_URL_PATH', 'admin/').strip() or 'admin/'
 if not ADMIN_URL_PATH.endswith('/'):
     ADMIN_URL_PATH = f'{ADMIN_URL_PATH}/'
-
-if not DEBUG and ADMIN_URL_PATH == 'admin/':
-    raise ImproperlyConfigured('Set DJANGO_ADMIN_URL_PATH to a non-default path in production.')
 
 if not DEBUG and not CORS_ALLOWED_ORIGINS:
     raise ImproperlyConfigured('DJANGO_CORS_ALLOWED_ORIGINS must be set in production.')

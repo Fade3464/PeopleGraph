@@ -90,7 +90,7 @@ If this server is directly internet-facing and Nginx terminates TLS itself, conf
 The Nginx config routes this path to Django:
 
 ```text
-/private-admin-path/
+/admin/
 ```
 
 If you change `DJANGO_ADMIN_URL_PATH`, update `deploy/nginx/default.conf` to match.
@@ -168,7 +168,8 @@ Edit `deploy/nginx/default.conf` and verify:
 - `server_name` contains your real domains.
 - `ssl_certificate` uses the primary domain Certbot created, for example `/etc/letsencrypt/live/peoplegraph.co/fullchain.pem`.
 - `ssl_certificate_key` uses the same primary domain.
-- `/private-admin-path/` matches `DJANGO_ADMIN_URL_PATH`.
+- `/admin/` routes to Django and matches `DJANGO_ADMIN_URL_PATH`.
+- `/admininstration/login` routes to the Next.js administration login page.
 
 Restart Nginx:
 

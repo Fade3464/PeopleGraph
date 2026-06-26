@@ -23,5 +23,6 @@ from lookups.views import HealthCheckView
 urlpatterns = [
     path(settings.ADMIN_URL_PATH, admin.site.urls),
     path('api/health/', HealthCheckView.as_view(), name='health-check'),
+    path('api/v1/auth/', include('accounts.urls')),
     path('api/v1/lookups/', include('lookups.urls')),
 ]

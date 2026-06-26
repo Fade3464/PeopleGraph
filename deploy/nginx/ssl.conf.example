@@ -51,8 +51,11 @@ server {
         proxy_pass http://peoplegraph_backend;
     }
 
-    # Keep this path aligned with DJANGO_ADMIN_URL_PATH in .env.production.
-    location /private-admin-path/ {
+    location = /admin {
+        return 301 /admin/;
+    }
+
+    location /admin/ {
         proxy_pass http://peoplegraph_backend;
     }
 

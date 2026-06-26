@@ -1384,24 +1384,25 @@ function ResultsList({
             style={{ animationDelay: `${Math.min(index * 50, 250)}ms` }}
           >
             <div className="flex flex-col gap-4 border-b border-white/10 bg-white/5 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-              <button
-                type="button"
-                onClick={() => onSelect(person)}
-                className="flex min-w-0 items-center gap-3 text-left"
-              >
-                <div className="grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br from-cyan-400 to-emerald-400 shadow-teal">
+              <div className="flex min-w-0 items-center gap-3 text-left">
+                <button
+                  type="button"
+                  onClick={() => onSelect(person)}
+                  aria-label={`Select ${getPersonName(person)}`}
+                  className="grid size-12 shrink-0 place-items-center rounded-full bg-gradient-to-br from-cyan-400 to-emerald-400 shadow-teal transition-transform hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
                   <CircleUserRound className="size-7 text-[#07100d]" />
-                </div>
+                </button>
 
-                <div className="min-w-0">
-                  <h3 className="truncate text-2xl font-extrabold tracking-tight">{getPersonName(person)}</h3>
+                <div className="min-w-0 select-text">
+                  <h3 className="cursor-text truncate text-2xl font-extrabold tracking-tight">{getPersonName(person)}</h3>
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <span>Age: {formatValue(person.age)}</span>
                     <span className="hidden sm:inline">•</span>
                     <span>Latest report: {getLatestReportedDate(person)}</span>
                   </div>
                 </div>
-              </button>
+              </div>
 
               <Button
                 type="button"
