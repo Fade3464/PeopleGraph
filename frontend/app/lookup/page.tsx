@@ -25,6 +25,7 @@ import {
   Mail,
   MapPin,
   MapPinned,
+  MessageSquareText,
   Network,
   Phone,
   Search,
@@ -522,6 +523,15 @@ export default function HomePage() {
           ) : null}
         </section>
       </div>
+      <footer className="border-t border-white/10 px-4 py-5 text-center">
+        <Link
+          href="/feedback"
+          className="inline-flex items-center gap-2 text-xs font-semibold text-muted-foreground transition-colors hover:text-primary"
+        >
+          <MessageSquareText className="size-3.5" />
+          Help us improve
+        </Link>
+      </footer>
     </main>
   );
 }
