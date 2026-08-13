@@ -47,6 +47,31 @@ SAMPLE_RESPONSE = {
     },
 }
 
+EMPTY_RESPONSE = {
+    'status': 'success',
+    'message': 'Found 0 result(s)',
+    'data': {'persons': [], 'pagination': {'totalResults': 0}},
+}
+
+SECONDARY_RESPONSE = {
+    'status': 'success',
+    'message': 'Found 1 result(s)',
+    'data': {
+        'persons': [
+            {
+                'id': 'secondary-name-0-john doe-11224',
+                'name': 'John Doe',
+                'age': 53,
+                'zipcode': '11224',
+                'state': 'NY',
+                'email': 'john@example.com',
+                'is_secondary': True,
+            }
+        ],
+        'pagination': {'totalResults': 1},
+    },
+}
+
 SAMPLE_BLACKLIST_RESPONSE = {
     'status': 'ok',
     'lookup': {
@@ -86,6 +111,36 @@ class HealthCheckTests(APITestCase):
 
 
 class PhoneLookupTests(APITestCase):
+    def test_phone_lookup_falls_back_after_empty_primary_and_caches_secondary(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_phone_lookup', return_value=EMPTY_RESPONSE) as primary_fetch,
+            patch('lookups.services.fetch_secondary_phone_lookup', return_value=SECONDARY_RESPONSE) as secondary_fetch,
+            patch('lookups.services.fetch_blacklist_lookup', return_value=SAMPLE_BLACKLIST_RESPONSE),
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '6175412753', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+            cached_response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '6175412753', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'secondary')
+        self.assertEqual(cached_response.data['source'], 'cache')
+        self.assertEqual(response.data['data']['persons'][0]['email'], 'john@example.com')
+        self.assertNotIn('raw', response.data['data']['persons'][0])
+        self.assertEqual(PhoneLookupCache.objects.get().provider, 'secondary')
+        self.assertTrue(PhoneLookupCache.objects.get().secondary_attempted)
+        primary_fetch.assert_called_once_with('6175412753')
+        secondary_fetch.assert_called_once_with('6175412753')
+
     @override_settings(TRUST_X_FORWARDED_FOR=True)
     def test_phone_lookup_fetches_and_caches_upstream_response(self):
         with (
@@ -175,6 +230,12 @@ class PhoneLookupTests(APITestCase):
                 format='json',
                 HTTP_HOST='localhost',
             )
+            cached_response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': 'Brooklyn, NY', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['status'], 'error')
@@ -212,6 +273,52 @@ class PhoneLookupTests(APITestCase):
 
 
 class NameAddressLookupTests(APITestCase):
+    def test_name_lookup_falls_back_with_state_after_empty_primary(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup', return_value=EMPTY_RESPONSE) as primary_fetch,
+            patch('lookups.services.fetch_secondary_name_lookup', return_value=SECONDARY_RESPONSE) as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': 'Brooklyn, NY', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+            cached_response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': 'Brooklyn, NY', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'secondary')
+        self.assertEqual(cached_response.data['source'], 'cache')
+        self.assertEqual(response.data['data']['persons'][0], SECONDARY_RESPONSE['data']['persons'][0])
+        self.assertEqual(NameAddrLookupCache.objects.get().provider, 'secondary')
+        self.assertTrue(NameAddrLookupCache.objects.get().secondary_attempted)
+        primary_fetch.assert_called_once_with('John', 'Doe', 'Brooklyn, NY', '')
+        secondary_fetch.assert_called_once_with('John', 'Doe', 'NY')
+
+    def test_name_lookup_does_not_fall_back_for_zip_only_input(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup', return_value=EMPTY_RESPONSE),
+            patch('lookups.services.fetch_secondary_name_lookup') as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': '10001', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'primary')
+        self.assertEqual(response.data['data']['result_count'], 0)
+        secondary_fetch.assert_not_called()
+
     def test_name_address_lookup_fetches_and_caches_upstream_response(self):
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}) as turnstile,

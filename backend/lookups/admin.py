@@ -8,12 +8,14 @@ class PhoneLookupCacheAdmin(admin.ModelAdmin):
     list_display = (
         'display_phone',
         'normalized_phone',
+        'provider',
+        'secondary_attempted',
         'status',
         'result_count',
         'updated_at',
     )
     search_fields = ('display_phone', 'normalized_phone')
-    list_filter = ('status',)
+    list_filter = ('provider', 'secondary_attempted', 'status')
     readonly_fields = ('fetched_at', 'updated_at')
 
 
@@ -39,6 +41,8 @@ class NameAddrLookupCacheAdmin(admin.ModelAdmin):
         'full_name',
         'address',
         'zipcode',
+        'provider',
+        'secondary_attempted',
         'status',
         'result_count',
         'updated_at',
@@ -50,7 +54,7 @@ class NameAddrLookupCacheAdmin(admin.ModelAdmin):
         'first_name_normalized',
         'last_name_normalized',
     )
-    list_filter = ('status',)
+    list_filter = ('provider', 'secondary_attempted', 'status')
     readonly_fields = ('fetched_at', 'updated_at')
 
 

@@ -173,6 +173,10 @@ type PersonResult = {
     associates?: number;
   };
   updated?: Nullable<string>;
+  zipcode?: Nullable<string>;
+  state?: Nullable<string>;
+  email?: Nullable<string>;
+  is_secondary?: boolean;
 
   [key: string]: unknown;
 };
@@ -181,6 +185,7 @@ type LookupResponse = {
   status: string;
   message?: string;
   source?: "cache" | "upstream";
+  provider?: "primary" | "secondary";
   query?: {
     [key: string]: string;
   };
@@ -216,6 +221,7 @@ type ModeLookupState = {
   results: PersonResult[];
   blacklist: BlacklistResult | null;
   selected: PersonResult | null;
+  provider: "primary" | "secondary";
 };
 
 function createEmptyLookupState(): ModeLookupState {
@@ -229,6 +235,7 @@ function createEmptyLookupState(): ModeLookupState {
     results: [],
     blacklist: null,
     selected: null,
+    provider: "primary",
   };
 }
 
@@ -366,6 +373,7 @@ export default function HomePage() {
       selected: null,
       results: [],
       blacklist: null,
+      provider: "primary",
     }));
     setToast(null);
 
@@ -418,6 +426,7 @@ export default function HomePage() {
         results: persons,
         blacklist: searchMode === "phone" ? payload?.blacklist ?? null : null,
         selected: persons[0] ?? null,
+        provider: payload?.provider ?? "primary",
         lookupFeedback:
           persons.length > 0
             ? ""
@@ -526,6 +535,7 @@ export default function HomePage() {
                 }));
               }}
               blacklist={activeLookup.blacklist}
+              provider={activeLookup.provider}
             />
           ) : null}
         </section>
@@ -1179,7 +1189,7 @@ function SearchPanel(props: SearchPanelProps) {
             <label className="block">
               <span className="mb-2 block text-sm font-semibold">Address or Zip Code</span>
 
-              <div className="relative">
+              <div className="group relative">
                 <MapPin className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
 
                 <Input
@@ -1193,7 +1203,16 @@ function SearchPanel(props: SearchPanelProps) {
                   placeholder="City, state, street, or zip code"
                   autoComplete="street-address"
                   aria-invalid={Boolean(feedbackMessage && isErrorFeedback)}
+                  aria-describedby="location-lookup-tooltip"
                 />
+
+                <div
+                  id="location-lookup-tooltip"
+                  role="tooltip"
+                  className="pointer-events-none absolute left-0 top-[calc(100%+0.75rem)] z-30 max-w-sm rounded-xl border border-white/10 bg-[#101827]/95 px-3 py-2 text-xs leading-5 text-muted-foreground opacity-0 shadow-panel backdrop-blur-xl transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+                >
+                  Include a state (for example, Boston, MA) for more precise results and secondary coverage. ZIP-only searches use the primary source only.
+                </div>
               </div>
             </label>
           </div>
@@ -1355,11 +1374,13 @@ function ResultsList({
   selectedId,
   onSelect,
   blacklist,
+  provider,
 }: {
   people: PersonResult[];
   selectedId?: PersonResult["id"];
   onSelect: (person: PersonResult) => void;
   blacklist: BlacklistResult | null;
+  provider: "primary" | "secondary";
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -1372,9 +1393,13 @@ function ResultsList({
 
   return (
     <section className="space-y-4">
-      <BlacklistPanel blacklist={blacklist} />
+      {provider === "primary" ? <BlacklistPanel blacklist={blacklist} /> : null}
 
       {people.map((person, index) => {
+        if (provider === "secondary" || person.is_secondary) {
+          return <SecondaryResultCard key={`${person.id}-${index}`} person={person} index={index} />;
+        }
+
         const personKey = String(person.id);
         const isExpanded = expandedId === personKey;
         const counts = getCounts(person);
@@ -1472,6 +1497,37 @@ function ResultsList({
         );
       })}
     </section>
+  );
+}
+
+function SecondaryResultCard({ person, index }: { person: PersonResult; index: number }) {
+  return (
+    <article
+      className="animate-fade-up rounded-2xl border border-white/10 bg-[#101827]/95 p-4 shadow-panel sm:p-5"
+      style={{ animationDelay: `${Math.min(index * 50, 250)}ms` }}
+    >
+      <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-gradient-to-br from-cyan-400 to-emerald-400 shadow-teal">
+          <CircleUserRound className="size-6 text-[#07100d]" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="truncate text-xl font-extrabold tracking-tight">{getPersonName(person)}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">Age: {formatValue(person.age)}</p>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <InfoBox icon={MapPin} title="Zip Code" accent="text-primary">
+          <p className="text-sm">{person.zipcode || "Not available"}</p>
+        </InfoBox>
+        <InfoBox icon={MapPinned} title="State" accent="text-cyan-300">
+          <p className="text-sm">{person.state || "Not available"}</p>
+        </InfoBox>
+        <InfoBox icon={Mail} title="Email" accent="text-emerald-400">
+          <p className="break-all text-sm">{person.email || "Not available"}</p>
+        </InfoBox>
+      </div>
+    </article>
   );
 }
 

@@ -1,15 +1,21 @@
 import json
+import logging
 import os
 import re
 import uuid
+from http.cookiejar import CookieJar
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode
+from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
 
 from django.db import transaction
 from django.utils import timezone
 
 from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupCache
+
+
+logger = logging.getLogger(__name__)
 
 
 MAX_TURNSTILE_TOKEN_LENGTH = 2048
@@ -18,6 +24,21 @@ MAX_LOCATION_LENGTH = 255
 NAME_ALLOWED_PATTERN = re.compile(r"^[A-Za-z][A-Za-z .'\-]*$")
 LOCATION_ALLOWED_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 .,#'\-/]*$")
 CONTROL_CHARACTER_PATTERN = re.compile(r'[\x00-\x1f\x7f]')
+US_STATE_CODES = {
+    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR', 'california': 'CA',
+    'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE', 'florida': 'FL', 'georgia': 'GA',
+    'hawaii': 'HI', 'idaho': 'ID', 'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA',
+    'kansas': 'KS', 'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
+    'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN', 'mississippi': 'MS',
+    'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE', 'nevada': 'NV', 'new hampshire': 'NH',
+    'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY', 'north carolina': 'NC',
+    'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK', 'oregon': 'OR',
+    'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC', 'south dakota': 'SD',
+    'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT', 'vermont': 'VT', 'virginia': 'VA',
+    'washington': 'WA', 'west virginia': 'WV', 'wisconsin': 'WI', 'wyoming': 'WY',
+    'district of columbia': 'DC',
+}
+US_STATE_ABBREVIATIONS = set(US_STATE_CODES.values())
 
 
 class LookupError(Exception):
@@ -168,13 +189,59 @@ def lookup_phone(phone_number: str) -> dict[str, Any]:
     phone_digits = normalized_phone[-10:]
     cached = PhoneLookupCache.objects.filter(normalized_phone=normalized_phone).first()
 
+    if cached and (cached.result_count > 0 or cached.secondary_attempted):
+        response = build_lookup_response(cached, source='cache')
+        response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
+        return response
+
     if cached:
+        try:
+            secondary_response = fetch_secondary_phone_lookup(phone_digits)
+            if response_has_persons(secondary_response):
+                cached = persist_phone_lookup(
+                    normalized_phone,
+                    display_phone,
+                    secondary_response,
+                    provider=PhoneLookupCache.PROVIDER_SECONDARY,
+                    secondary_attempted=True,
+                )
+                response = build_lookup_response(cached, source='upstream')
+                response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
+                return response
+            cached = persist_phone_lookup(
+                normalized_phone,
+                display_phone,
+                cached.raw_response,
+                provider=PhoneLookupCache.PROVIDER_PRIMARY,
+                secondary_attempted=True,
+            )
+        except UpstreamLookupError as exc:
+            logger.warning('Secondary phone lookup unavailable: %s', exc)
+
         response = build_lookup_response(cached, source='cache')
         response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
         return response
 
     upstream_response = fetch_phone_lookup(phone_digits)
-    cache = persist_phone_lookup(normalized_phone, display_phone, upstream_response)
+    provider = PhoneLookupCache.PROVIDER_PRIMARY
+    secondary_attempted = False
+    if not response_has_persons(upstream_response):
+        try:
+            secondary_response = fetch_secondary_phone_lookup(phone_digits)
+            secondary_attempted = True
+            if response_has_persons(secondary_response):
+                upstream_response = secondary_response
+                provider = PhoneLookupCache.PROVIDER_SECONDARY
+        except UpstreamLookupError as exc:
+            logger.warning('Secondary phone lookup unavailable: %s', exc)
+
+    cache = persist_phone_lookup(
+        normalized_phone,
+        display_phone,
+        upstream_response,
+        provider=provider,
+        secondary_attempted=secondary_attempted,
+    )
     response = build_lookup_response(cache, source='upstream')
     response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
     return response
@@ -188,7 +255,33 @@ def lookup_name_address(full_name: str, address_or_zip: str) -> dict[str, Any]:
         location_normalized=normalized['location_normalized'],
     ).first()
 
+    state = extract_us_state(normalized['address']) if not normalized['zipcode'] else ''
+    if cached and (cached.result_count > 0 or not state or cached.secondary_attempted):
+        return build_name_address_response(cached, source='cache')
+
     if cached:
+        try:
+            secondary_response = fetch_secondary_name_lookup(
+                normalized['first_name'],
+                normalized['last_name'],
+                state,
+            )
+            if response_has_persons(secondary_response):
+                cached = persist_name_address_lookup(
+                    normalized,
+                    secondary_response,
+                    provider=NameAddrLookupCache.PROVIDER_SECONDARY,
+                    secondary_attempted=True,
+                )
+                return build_name_address_response(cached, source='upstream')
+            cached = persist_name_address_lookup(
+                normalized,
+                cached.raw_response,
+                provider=NameAddrLookupCache.PROVIDER_PRIMARY,
+                secondary_attempted=True,
+            )
+        except UpstreamLookupError as exc:
+            logger.warning('Secondary name lookup unavailable: %s', exc)
         return build_name_address_response(cached, source='cache')
 
     upstream_response = fetch_name_address_lookup(
@@ -197,8 +290,47 @@ def lookup_name_address(full_name: str, address_or_zip: str) -> dict[str, Any]:
         normalized['address'],
         normalized['zipcode'],
     )
-    cache = persist_name_address_lookup(normalized, upstream_response)
+    provider = NameAddrLookupCache.PROVIDER_PRIMARY
+    secondary_attempted = False
+    if not response_has_persons(upstream_response) and state:
+        try:
+            secondary_response = fetch_secondary_name_lookup(
+                normalized['first_name'],
+                normalized['last_name'],
+                state,
+            )
+            secondary_attempted = True
+            if response_has_persons(secondary_response):
+                upstream_response = secondary_response
+                provider = NameAddrLookupCache.PROVIDER_SECONDARY
+        except UpstreamLookupError as exc:
+            logger.warning('Secondary name lookup unavailable: %s', exc)
+
+    cache = persist_name_address_lookup(
+        normalized,
+        upstream_response,
+        provider=provider,
+        secondary_attempted=secondary_attempted,
+    )
     return build_name_address_response(cache, source='upstream')
+
+
+def response_has_persons(response: dict[str, Any]) -> bool:
+    return bool(response.get('data', {}).get('persons', []))
+
+
+def extract_us_state(location: str) -> str:
+    cleaned = normalize_text(location)
+    for state_name in sorted(US_STATE_CODES, key=len, reverse=True):
+        if re.search(rf'(?<![a-z]){re.escape(state_name)}(?![a-z])', cleaned):
+            return US_STATE_CODES[state_name]
+
+    state_match = re.search(r'(?<![A-Za-z])([A-Za-z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*$', location or '')
+    if state_match:
+        code = state_match.group(1).upper()
+        if code in US_STATE_ABBREVIATIONS:
+            return code
+    return ''
 
 
 def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
@@ -281,6 +413,121 @@ def fetch_name_address_lookup(first_name: str, last_name: str, address: str, zip
         raise UpstreamLookupError('Lookup provider returned an invalid response.') from exc
 
 
+def fetch_secondary_phone_lookup(phone_digits: str) -> dict[str, Any]:
+    base_url = os.environ.get('INFOLOOKUP_BASE_URL', 'https://infolookup.site').rstrip('/')
+    token_url = os.environ.get('INFOLOOKUP_TOKEN_URL', f'{base_url}/lookup-token.php')
+    endpoint = os.environ.get('INFOLOOKUP_PHONE_LOOKUP_URL', f'{base_url}/api/lookup')
+    timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
+    opener = build_opener(HTTPCookieProcessor(CookieJar()))
+    token_request = Request(
+        token_url,
+        headers={'Accept': 'application/json', 'Referer': f'{base_url}/'},
+        method='GET',
+    )
+
+    try:
+        with opener.open(token_request, timeout=timeout) as response:
+            token_payload = json.loads(response.read().decode('utf-8'))
+        security_token = str(token_payload.get('token') or '').strip()
+        if not security_token:
+            raise UpstreamLookupError('Secondary phone provider did not return a security token.')
+
+        query = urlencode({'x': phone_digits, '_t': security_token})
+        lookup_request = Request(
+            f'{endpoint}?{query}',
+            headers={
+                'Accept': 'application/json',
+                'Referer': f'{base_url}/',
+            },
+            method='GET',
+        )
+        with opener.open(lookup_request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+    except HTTPError as exc:
+        exc.read()
+        raise UpstreamLookupError(f'Secondary phone provider returned {exc.code}.') from exc
+    except (URLError, TimeoutError) as exc:
+        raise UpstreamLookupError('Secondary phone provider is unavailable.') from exc
+    except json.JSONDecodeError as exc:
+        raise UpstreamLookupError('Secondary phone provider returned an invalid response.') from exc
+
+    return normalize_secondary_response(payload, payload.get('person'), 'phone')
+
+
+def fetch_secondary_name_lookup(first_name: str, last_name: str, state: str) -> dict[str, Any]:
+    endpoint = os.environ.get('INFOLOOKUP_NAME_LOOKUP_URL', 'https://infolookup.site/api/name/')
+    referer = os.environ.get('INFOLOOKUP_NAME_LOOKUP_REFERER', 'https://infolookup.site/name-search')
+    timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
+    query = urlencode({'firstName': first_name, 'lastName': last_name, 'state': state})
+    request = Request(
+        f'{endpoint}?{query}',
+        headers={'Accept': 'application/json', 'Referer': referer},
+        method='GET',
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+    except HTTPError as exc:
+        exc.read()
+        raise UpstreamLookupError(f'Secondary name provider returned {exc.code}.') from exc
+    except (URLError, TimeoutError) as exc:
+        raise UpstreamLookupError('Secondary name provider is unavailable.') from exc
+    except json.JSONDecodeError as exc:
+        raise UpstreamLookupError('Secondary name provider returned an invalid response.') from exc
+
+    return normalize_secondary_response(payload, payload.get('results'), 'name')
+
+
+def normalize_secondary_response(
+    payload: dict[str, Any],
+    records: Any,
+    lookup_type: str,
+) -> dict[str, Any]:
+    if payload.get('status') != 'ok' or not isinstance(records, list):
+        records = []
+
+    persons = []
+    for index, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        address_parts = record.get('addressParts') if isinstance(record.get('addressParts'), dict) else {}
+        addresses = record.get('addresses') if isinstance(record.get('addresses'), list) else []
+        primary_address = addresses[0] if addresses and isinstance(addresses[0], dict) else {}
+        state = address_parts.get('state') or primary_address.get('state') or ''
+        zipcode = address_parts.get('zip') or primary_address.get('zip') or ''
+        email = record.get('email') or ''
+        if not email and isinstance(record.get('emails'), list) and record['emails']:
+            email = record['emails'][0]
+        name = str(record.get('name') or 'Unknown person').strip()
+        persons.append(
+            {
+                'id': f'secondary-{lookup_type}-{index}-{normalize_text(name)}-{zipcode}',
+                'name': name,
+                'age': record.get('age'),
+                'zipcode': str(zipcode),
+                'state': str(state),
+                'email': str(email),
+                'is_secondary': True,
+            }
+        )
+
+    count = len(persons)
+    return {
+        'status': 'success' if count else 'not_found',
+        'message': f'Found {count} result(s)' if count else 'No records found.',
+        'data': {
+            'persons': persons,
+            'pagination': {
+                'currentPageNumber': 1,
+                'resultsPerPage': count,
+                'totalPages': 1 if count else 0,
+                'totalResults': count,
+            },
+        },
+    }
+
+
 def lookup_blacklist(phone_digits: str, normalized_phone: str, display_phone: str) -> dict[str, Any]:
     cached = BlacklistLookupCache.objects.filter(normalized_phone=normalized_phone).first()
 
@@ -347,12 +594,16 @@ def persist_phone_lookup(
     normalized_phone: str,
     display_phone: str,
     response: dict[str, Any],
+    provider: str = PhoneLookupCache.PROVIDER_PRIMARY,
+    secondary_attempted: bool = False,
 ) -> PhoneLookupCache:
     persons = response.get('data', {}).get('persons', [])
     cache, _ = PhoneLookupCache.objects.update_or_create(
         normalized_phone=normalized_phone,
         defaults={
             'display_phone': display_phone,
+            'provider': provider,
+            'secondary_attempted': secondary_attempted,
             'status': str(response.get('status', 'unknown')),
             'message': str(response.get('message', '')),
             'result_count': len(persons),
@@ -393,6 +644,8 @@ def persist_blacklist_lookup(
 def persist_name_address_lookup(
     normalized: dict[str, str],
     response: dict[str, Any],
+    provider: str = NameAddrLookupCache.PROVIDER_PRIMARY,
+    secondary_attempted: bool = False,
 ) -> NameAddrLookupCache:
     persons = response.get('data', {}).get('persons', [])
     cache, _ = NameAddrLookupCache.objects.update_or_create(
@@ -403,6 +656,8 @@ def persist_name_address_lookup(
             'address': normalized['address'],
             'zipcode': normalized['zipcode'],
             'full_name': normalized['full_name'],
+            'provider': provider,
+            'secondary_attempted': secondary_attempted,
             'status': str(response.get('status', 'unknown')),
             'message': str(response.get('message', '')),
             'result_count': len(persons),
@@ -422,12 +677,13 @@ def build_lookup_response(cache: PhoneLookupCache, source: str) -> dict[str, Any
         'status': cache.status,
         'message': cache.message,
         'source': source,
+        'provider': cache.provider,
         'query': {
             'phone_number': cache.display_phone,
             'normalized_phone': cache.normalized_phone,
         },
         'data': {
-            'persons': [serialize_person(person) for person in persons],
+            'persons': [serialize_cached_person(person, cache.provider) for person in persons],
             'pagination': pagination,
             'result_count': cache.result_count,
         },
@@ -443,6 +699,7 @@ def build_name_address_response(cache: NameAddrLookupCache, source: str) -> dict
         'status': cache.status,
         'message': cache.message,
         'source': source,
+        'provider': cache.provider,
         'query': {
             'full_name': cache.full_name,
             'first_name': cache.first_name_normalized,
@@ -452,7 +709,7 @@ def build_name_address_response(cache: NameAddrLookupCache, source: str) -> dict
             'location_key': cache.location_normalized,
         },
         'data': {
-            'persons': [serialize_person(person) for person in persons],
+            'persons': [serialize_cached_person(person, cache.provider) for person in persons],
             'pagination': pagination,
             'result_count': cache.result_count,
         },
@@ -553,6 +810,20 @@ def serialize_person(person: dict[str, Any]) -> dict[str, Any]:
             'associates': person.get('associates') or [],
         },
     }
+
+
+def serialize_cached_person(person: dict[str, Any], provider: str) -> dict[str, Any]:
+    if provider == PhoneLookupCache.PROVIDER_SECONDARY:
+        return {
+            'id': str(person.get('id') or person.get('name') or 'secondary-result'),
+            'name': str(person.get('name') or 'Unknown person'),
+            'age': person.get('age'),
+            'zipcode': str(person.get('zipcode') or ''),
+            'state': str(person.get('state') or ''),
+            'email': str(person.get('email') or ''),
+            'is_secondary': True,
+        }
+    return serialize_person(person)
 
 
 def estimate_confidence(person: dict[str, Any]) -> str:

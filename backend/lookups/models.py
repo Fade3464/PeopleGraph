@@ -2,8 +2,17 @@ from django.db import models
 
 
 class PhoneLookupCache(models.Model):
+    PROVIDER_PRIMARY = 'primary'
+    PROVIDER_SECONDARY = 'secondary'
+    PROVIDER_CHOICES = (
+        (PROVIDER_PRIMARY, 'Primary'),
+        (PROVIDER_SECONDARY, 'Secondary'),
+    )
+
     normalized_phone = models.CharField(max_length=16, unique=True, db_index=True)
     display_phone = models.CharField(max_length=20)
+    provider = models.CharField(max_length=16, choices=PROVIDER_CHOICES, default=PROVIDER_PRIMARY, db_index=True)
+    secondary_attempted = models.BooleanField(default=False, db_index=True)
     status = models.CharField(max_length=32)
     message = models.CharField(max_length=255, blank=True)
     result_count = models.PositiveIntegerField(default=0, db_index=True)
@@ -23,12 +32,21 @@ class PhoneLookupCache(models.Model):
 
 
 class NameAddrLookupCache(models.Model):
+    PROVIDER_PRIMARY = 'primary'
+    PROVIDER_SECONDARY = 'secondary'
+    PROVIDER_CHOICES = (
+        (PROVIDER_PRIMARY, 'Primary'),
+        (PROVIDER_SECONDARY, 'Secondary'),
+    )
+
     first_name_normalized = models.CharField(max_length=80, db_index=True)
     last_name_normalized = models.CharField(max_length=160, db_index=True)
     location_normalized = models.CharField(max_length=255, db_index=True)
     address = models.CharField(max_length=255, blank=True, db_index=True)
     zipcode = models.CharField(max_length=10, blank=True, db_index=True)
     full_name = models.CharField(max_length=255)
+    provider = models.CharField(max_length=16, choices=PROVIDER_CHOICES, default=PROVIDER_PRIMARY, db_index=True)
+    secondary_attempted = models.BooleanField(default=False, db_index=True)
     status = models.CharField(max_length=32)
     message = models.CharField(max_length=255, blank=True)
     result_count = models.PositiveIntegerField(default=0, db_index=True)
