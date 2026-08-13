@@ -153,7 +153,10 @@ class PhoneLookupTests(APITestCase):
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
             patch('lookups.services.fetch_phone_lookup', return_value=EMPTY_RESPONSE) as primary_fetch,
             patch('lookups.services.fetch_secondary_phone_lookup', return_value=SECONDARY_RESPONSE) as secondary_fetch,
-            patch('lookups.services.fetch_blacklist_lookup', return_value=SAMPLE_BLACKLIST_RESPONSE),
+            patch(
+                'lookups.services.fetch_blacklist_lookup',
+                return_value=SAMPLE_BLACKLIST_RESPONSE,
+            ) as blacklist_fetch,
         ):
             response = self.client.post(
                 '/api/v1/lookups/phone/',
@@ -170,13 +173,16 @@ class PhoneLookupTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['provider'], 'secondary')
+        self.assertEqual(response.data['blacklist']['summary_status'], 'State DNC | Federal DNC')
         self.assertEqual(cached_response.data['source'], 'cache')
+        self.assertEqual(cached_response.data['blacklist']['source'], 'cache')
         self.assertEqual(response.data['data']['persons'][0]['email'], 'john@example.com')
         self.assertNotIn('raw', response.data['data']['persons'][0])
         self.assertEqual(PhoneLookupCache.objects.get().provider, 'secondary')
         self.assertTrue(PhoneLookupCache.objects.get().secondary_attempted)
         primary_fetch.assert_called_once_with('6175412753')
         secondary_fetch.assert_called_once_with('6175412753')
+        blacklist_fetch.assert_called_once_with('6175412753')
 
     @override_settings(TRUST_X_FORWARDED_FOR=True)
     def test_phone_lookup_fetches_and_caches_upstream_response(self):

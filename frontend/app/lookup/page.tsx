@@ -1393,7 +1393,7 @@ function ResultsList({
 
   return (
     <section className="space-y-4">
-      {provider === "primary" ? <BlacklistPanel blacklist={blacklist} /> : null}
+      <BlacklistPanel blacklist={blacklist} />
 
       {people.map((person, index) => {
         if (provider === "secondary" || person.is_secondary) {
