@@ -66,6 +66,13 @@ declare global {
 type SearchMode = "phone" | "person";
 type SearchState = "ready" | "loading" | "results" | "empty" | "error";
 
+const US_STATE_CODES = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+  "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+  "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+  "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
+]);
+
 type Nullable<T> = T | null | undefined;
 
 type ToastState = {
@@ -681,7 +688,9 @@ if (/\d/.test(trimmedName)) {
     return "Enter an address or zip code.";
   }
 
-  if (trimmedLocation.length < 3) {
+  const isStateOnly = US_STATE_CODES.has(trimmedLocation.toUpperCase());
+
+  if (trimmedLocation.length < 3 && !isStateOnly) {
     return "Enter a more specific address or zip code.";
   }
 
@@ -1211,7 +1220,7 @@ function SearchPanel(props: SearchPanelProps) {
                   role="tooltip"
                   className="pointer-events-none absolute left-0 top-[calc(100%+0.75rem)] z-30 max-w-sm rounded-xl border border-white/10 bg-[#101827]/95 px-3 py-2 text-xs leading-5 text-muted-foreground opacity-0 shadow-panel backdrop-blur-xl transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
                 >
-                  Include a state (for example, Boston, MA) for more precise results and secondary coverage. Locations containing a ZIP use the primary source only.
+                  A state by itself (for example, NY or WA) is accepted. Include a state for more precise results and secondary coverage. Locations containing a ZIP use the primary source only.
                 </div>
               </div>
             </label>

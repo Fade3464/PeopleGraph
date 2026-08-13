@@ -316,6 +316,27 @@ class PhoneLookupTests(APITestCase):
 
 
 class NameAddressLookupTests(APITestCase):
+    def test_name_lookup_accepts_state_only_and_falls_back_after_empty_primary(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup', return_value=EMPTY_RESPONSE) as primary_fetch,
+            patch(
+                'lookups.services.fetch_secondary_name_lookup',
+                return_value=SECONDARY_RESPONSE,
+            ) as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': 'NY', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'secondary')
+        primary_fetch.assert_called_once_with('John', 'Doe', 'NY', '')
+        secondary_fetch.assert_called_once_with('John', 'Doe', 'NY')
+
     def test_name_lookup_falls_back_with_state_after_empty_primary(self):
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
