@@ -1,0 +1,5 @@
+.env
+__pycache__/
+.pytest_cache/
+tunnel-state/current-tunnel.env
+tunnel-state/.current-tunnel.env.*

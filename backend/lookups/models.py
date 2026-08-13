@@ -1,3 +1,7 @@
+from urllib.parse import urlsplit
+
+from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinLengthValidator, MinValueValidator
 from django.db import models
 
 
@@ -120,3 +124,57 @@ class PhoneLookupAudit(models.Model):
 
     def __str__(self):
         return f'{self.phone_number} from {self.public_ip or "unknown IP"} at {self.timestamp}'
+
+
+class SecondaryRelayConfiguration(models.Model):
+    singleton_key = models.PositiveSmallIntegerField(default=1, unique=True, editable=False)
+    enabled = models.BooleanField(default=True, db_index=True)
+    phone_endpoint = models.URLField(max_length=500)
+    name_endpoint = models.URLField(max_length=500)
+    api_token = models.CharField(max_length=255, validators=[MinLengthValidator(32)])
+    timeout_seconds = models.PositiveSmallIntegerField(
+        default=20,
+        validators=[MinValueValidator(3), MaxValueValidator(60)],
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'secondary relay configuration'
+        verbose_name_plural = 'secondary relay configuration'
+
+    def clean(self):
+        super().clean()
+        self.phone_endpoint = self._validate_endpoint(
+            self.phone_endpoint,
+            '/v1/lookups/phone',
+            'phone_endpoint',
+        )
+        self.name_endpoint = self._validate_endpoint(
+            self.name_endpoint,
+            '/v1/lookups/name',
+            'name_endpoint',
+        )
+
+    @staticmethod
+    def _validate_endpoint(value, expected_path, field_name):
+        cleaned = (value or '').strip().rstrip('/')
+        parsed = urlsplit(cleaned)
+        if parsed.scheme != 'https':
+            raise ValidationError({field_name: 'Relay endpoints must use HTTPS.'})
+        if not parsed.hostname or parsed.username or parsed.password:
+            raise ValidationError({field_name: 'Enter a valid relay endpoint.'})
+        if parsed.query or parsed.fragment or parsed.path != expected_path:
+            raise ValidationError(
+                {field_name: f'Relay endpoint must end exactly with {expected_path}.'}
+            )
+        return cleaned
+
+    def save(self, *args, **kwargs):
+        self.singleton_key = 1
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        status = 'enabled' if self.enabled else 'disabled'
+        return f'Secondary lookup relay ({status})'

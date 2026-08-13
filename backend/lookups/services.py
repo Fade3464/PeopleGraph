@@ -2,18 +2,23 @@ import json
 import logging
 import os
 import re
-import subprocess
-import tempfile
 import uuid
+from dataclasses import dataclass
+from http.client import HTTPException as HttpClientException
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupCache
+from .models import (
+    BlacklistLookupCache,
+    NameAddrLookupCache,
+    PhoneLookupCache,
+    SecondaryRelayConfiguration,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,7 @@ US_STATE_CODES = {
     'district of columbia': 'DC',
 }
 US_STATE_ABBREVIATIONS = set(US_STATE_CODES.values())
+US_ZIP_PATTERN = re.compile(r'(?<!\d)\d{5}(?:-\d{4})?(?!\d)')
 
 
 class LookupError(Exception):
@@ -60,6 +66,14 @@ class InvalidNameAddressError(LookupError):
 
 class TurnstileValidationError(LookupError):
     pass
+
+
+@dataclass(frozen=True)
+class RelayConfiguration:
+    phone_endpoint: str
+    name_endpoint: str
+    api_token: str
+    timeout_seconds: int
 
 
 def validate_turnstile_token(token: str, remote_ip: str | None = None) -> dict[str, Any]:
@@ -256,7 +270,9 @@ def lookup_name_address(full_name: str, address_or_zip: str) -> dict[str, Any]:
         location_normalized=normalized['location_normalized'],
     ).first()
 
-    state = extract_us_state(normalized['address']) if not normalized['zipcode'] else ''
+    state = ''
+    if not normalized['zipcode'] and not contains_us_zip(normalized['address']):
+        state = extract_us_state(normalized['address'])
     if cached and (cached.result_count > 0 or not state or cached.secondary_attempted):
         return build_name_address_response(cached, source='cache')
 
@@ -332,6 +348,10 @@ def extract_us_state(location: str) -> str:
         if code in US_STATE_ABBREVIATIONS:
             return code
     return ''
+
+
+def contains_us_zip(location: str) -> bool:
+    return bool(US_ZIP_PATTERN.search(location or ''))
 
 
 def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
@@ -415,140 +435,112 @@ def fetch_name_address_lookup(first_name: str, last_name: str, address: str, zip
 
 
 def fetch_secondary_phone_lookup(phone_digits: str) -> dict[str, Any]:
-    base_url = os.environ.get('INFOLOOKUP_BASE_URL', 'https://infolookup.site').rstrip('/')
-    token_url = os.environ.get('INFOLOOKUP_TOKEN_URL', f'{base_url}/lookup-token.php')
-    endpoint = os.environ.get('INFOLOOKUP_PHONE_LOOKUP_URL', f'{base_url}/api/lookup')
-    timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
-
-    with tempfile.TemporaryDirectory(prefix='peoplegraph-infolookup-') as temp_dir:
-        cookie_jar = os.path.join(temp_dir, 'cookies.txt')
-        token_body = run_secondary_curl(
-            [
-                '-c', cookie_jar,
-                '-b', cookie_jar,
-                '-H', f'Referer: {base_url}/',
-                '--', token_url,
-            ],
-            timeout,
-            'token endpoint',
-        )
-        try:
-            token_payload = json.loads(token_body)
-        except json.JSONDecodeError as exc:
-            raise UpstreamLookupError('Secondary phone token endpoint returned invalid JSON.') from exc
-
-        security_token = str(token_payload.get('token') or '').strip()
-        if not security_token:
-            raise UpstreamLookupError('Secondary phone provider did not return a security token.')
-
-        lookup_body = run_secondary_curl(
-            [
-                '-b', cookie_jar,
-                '-H', f'Referer: {base_url}/',
-                '-G',
-                '--data-urlencode', f'x={phone_digits}',
-                '--data-urlencode', f'_t={security_token}',
-                '--', endpoint,
-            ],
-            timeout,
-            'lookup endpoint',
-        )
-        try:
-            payload = json.loads(lookup_body)
-        except json.JSONDecodeError as exc:
-            raise UpstreamLookupError('Secondary phone lookup endpoint returned invalid JSON.') from exc
-
-    return normalize_secondary_response(payload, payload.get('person'), 'phone')
-
-
-def run_secondary_curl(arguments: list[str], timeout: float, request_stage: str) -> str:
-    command = [
-        'curl',
-        '-sS',
-        '--fail-with-body',
-        '--max-time',
-        str(timeout),
-        *arguments,
-    ]
-    try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout + 2,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise UpstreamLookupError('Secondary phone lookup client is unavailable.') from exc
-    except subprocess.TimeoutExpired as exc:
-        raise UpstreamLookupError(f'Secondary phone {request_stage} timed out.') from exc
-
-    if completed.returncode != 0:
-        status_match = re.search(r'\b([45]\d{2})\b', completed.stderr or '')
-        if status_match:
-            raise UpstreamLookupError(
-                f'Secondary phone {request_stage} returned {status_match.group(1)}.'
-            )
-        raise UpstreamLookupError(
-            f'Secondary phone {request_stage} failed (curl exit {completed.returncode}).'
-        )
-    return completed.stdout
+    configuration = get_secondary_relay_configuration()
+    return request_secondary_relay(
+        configuration.phone_endpoint,
+        {'phone_number': phone_digits},
+        configuration,
+        'phone',
+    )
 
 
 def fetch_secondary_name_lookup(first_name: str, last_name: str, state: str) -> dict[str, Any]:
-    endpoint = os.environ.get('INFOLOOKUP_NAME_LOOKUP_URL', 'https://infolookup.site/api/name/')
-    referer = os.environ.get('INFOLOOKUP_NAME_LOOKUP_REFERER', 'https://infolookup.site/name-search')
-    timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
-    query = urlencode({'firstName': first_name, 'lastName': last_name, 'state': state})
-    request = Request(
-        f'{endpoint}?{query}',
-        headers={'Accept': 'application/json', 'Referer': referer},
-        method='GET',
+    if state not in US_STATE_ABBREVIATIONS:
+        raise UpstreamLookupError('Secondary name lookup requires a valid US state.')
+    configuration = get_secondary_relay_configuration()
+    return request_secondary_relay(
+        configuration.name_endpoint,
+        {'first_name': first_name, 'last_name': last_name, 'state': state},
+        configuration,
+        'name',
     )
 
-    try:
-        with urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode('utf-8'))
-    except HTTPError as exc:
-        exc.read()
-        raise UpstreamLookupError(f'Secondary name provider returned {exc.code}.') from exc
-    except (URLError, TimeoutError) as exc:
-        raise UpstreamLookupError('Secondary name provider is unavailable.') from exc
-    except json.JSONDecodeError as exc:
-        raise UpstreamLookupError('Secondary name provider returned an invalid response.') from exc
 
-    return normalize_secondary_response(payload, payload.get('results'), 'name')
+def get_secondary_relay_configuration() -> RelayConfiguration:
+    record = SecondaryRelayConfiguration.objects.filter(enabled=True).values(
+        'phone_endpoint',
+        'name_endpoint',
+        'api_token',
+        'timeout_seconds',
+    ).first()
+    if not record:
+        raise UpstreamLookupError('Secondary lookup relay is not configured.')
+
+    return RelayConfiguration(
+        phone_endpoint=record['phone_endpoint'],
+        name_endpoint=record['name_endpoint'],
+        api_token=record['api_token'],
+        timeout_seconds=record['timeout_seconds'],
+    )
 
 
-def normalize_secondary_response(
-    payload: dict[str, Any],
-    records: Any,
+def request_secondary_relay(
+    endpoint: str,
+    request_payload: dict[str, str],
+    configuration: RelayConfiguration,
     lookup_type: str,
 ) -> dict[str, Any]:
-    if payload.get('status') != 'ok' or not isinstance(records, list):
-        records = []
+    request = Request(
+        endpoint,
+        data=json.dumps(request_payload, separators=(',', ':')).encode('utf-8'),
+        headers={
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {configuration.api_token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'PeopleGraph-Secondary-Relay/1.0',
+        },
+        method='POST',
+    )
+    try:
+        with urlopen(request, timeout=configuration.timeout_seconds) as response:
+            body = response.read(settings.SECONDARY_RELAY_MAX_RESPONSE_BYTES + 1)
+    except HTTPError as exc:
+        exc.read(settings.SECONDARY_RELAY_MAX_RESPONSE_BYTES)
+        logger.warning('Secondary relay rejected lookup_type=%s status=%s', lookup_type, exc.code)
+        raise UpstreamLookupError(f'Secondary relay returned {exc.code}.') from exc
+    except (URLError, OSError, HttpClientException) as exc:
+        raise UpstreamLookupError('Secondary lookup relay is unavailable.') from exc
+
+    if len(body) > settings.SECONDARY_RELAY_MAX_RESPONSE_BYTES:
+        raise UpstreamLookupError('Secondary lookup relay returned too much data.')
+
+    try:
+        payload = json.loads(body.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpstreamLookupError('Secondary lookup relay returned invalid JSON.') from exc
+    return normalize_relay_response(payload, lookup_type)
+
+
+def normalize_relay_response(payload: Any, lookup_type: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise UpstreamLookupError('Secondary lookup relay returned invalid data.')
+    relay_status = payload.get('status')
+    records = payload.get('persons')
+    if relay_status not in {'success', 'not_found'} or not isinstance(records, list):
+        raise UpstreamLookupError('Secondary lookup relay returned invalid data.')
 
     persons = []
-    for index, record in enumerate(records):
+    for index, record in enumerate(records[:100]):
         if not isinstance(record, dict):
             continue
-        address_parts = record.get('addressParts') if isinstance(record.get('addressParts'), dict) else {}
-        addresses = record.get('addresses') if isinstance(record.get('addresses'), list) else []
-        primary_address = addresses[0] if addresses and isinstance(addresses[0], dict) else {}
-        state = address_parts.get('state') or primary_address.get('state') or ''
-        zipcode = address_parts.get('zip') or primary_address.get('zip') or ''
-        email = record.get('email') or ''
-        if not email and isinstance(record.get('emails'), list) and record['emails']:
-            email = record['emails'][0]
-        name = str(record.get('name') or 'Unknown person').strip()
+        name = relay_text(record.get('name'), 255) or 'Unknown person'
+        zipcode = relay_text(record.get('zipcode'), 10)
+        raw_age = record.get('age')
+        if isinstance(raw_age, int) and not isinstance(raw_age, bool):
+            age = raw_age
+        elif isinstance(raw_age, str):
+            age = raw_age.strip()[:16]
+        else:
+            age = None
         persons.append(
             {
-                'id': f'secondary-{lookup_type}-{index}-{normalize_text(name)}-{zipcode}',
+                'id': relay_text(record.get('id'), 255)
+                or f'secondary-{lookup_type}-{index}-{normalize_text(name)}-{zipcode}',
                 'name': name,
-                'age': record.get('age'),
-                'zipcode': str(zipcode),
-                'state': str(state),
-                'email': str(email),
+                'age': age,
+                'zipcode': zipcode,
+                'state': relay_text(record.get('state'), 2).upper(),
+                'email': relay_text(record.get('email'), 320),
                 'is_secondary': True,
             }
         )
@@ -567,6 +559,10 @@ def normalize_secondary_response(
             },
         },
     }
+
+
+def relay_text(value: Any, max_length: int) -> str:
+    return value.strip()[:max_length] if isinstance(value, str) else ''
 
 
 def lookup_blacklist(phone_digits: str, normalized_phone: str, display_phone: str) -> dict[str, Any]:

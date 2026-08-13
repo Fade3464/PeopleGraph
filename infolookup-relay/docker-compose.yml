@@ -1,0 +1,50 @@
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    environment:
+      RELAY_API_TOKEN: ${RELAY_API_TOKEN}
+      INFOLOOKUP_BASE_URL: ${INFOLOOKUP_BASE_URL:-https://infolookup.site}
+      INFOLOOKUP_TOKEN_URL: ${INFOLOOKUP_TOKEN_URL:-https://infolookup.site/lookup-token.php}
+      INFOLOOKUP_PHONE_LOOKUP_URL: ${INFOLOOKUP_PHONE_LOOKUP_URL:-https://infolookup.site/api/lookup}
+      INFOLOOKUP_NAME_LOOKUP_URL: ${INFOLOOKUP_NAME_LOOKUP_URL:-https://infolookup.site/api/name/}
+      INFOLOOKUP_NAME_LOOKUP_REFERER: ${INFOLOOKUP_NAME_LOOKUP_REFERER:-https://infolookup.site/name-search}
+      UPSTREAM_TIMEOUT_SECONDS: ${UPSTREAM_TIMEOUT_SECONDS:-15}
+      MAX_CONCURRENT_LOOKUPS: ${MAX_CONCURRENT_LOOKUPS:-4}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
+      MAX_UPSTREAM_BYTES: ${MAX_UPSTREAM_BYTES:-2097152}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    networks:
+      - relay_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+  cloudflared:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloudflared
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      TUNNEL_ORIGIN_URL: http://relay:8000
+      TUNNEL_STATE_FILE: /tunnel-state/current-tunnel.env
+    volumes:
+      - ./tunnel-state:/tunnel-state
+    ports:
+      - "127.0.0.1:2000:2000"
+    networks:
+      - relay_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,mode=1777
+
+networks:
+  relay_internal:
+    driver: bridge

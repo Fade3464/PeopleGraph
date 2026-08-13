@@ -1,10 +1,19 @@
+import json
 from unittest.mock import MagicMock, patch
 
+from django.core.exceptions import ValidationError
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupAudit, PhoneLookupCache
-from .services import fetch_secondary_phone_lookup
+from .admin import SecondaryRelayConfigurationForm
+from .models import (
+    BlacklistLookupCache,
+    NameAddrLookupCache,
+    PhoneLookupAudit,
+    PhoneLookupCache,
+    SecondaryRelayConfiguration,
+)
+from .services import UpstreamLookupError, fetch_secondary_name_lookup, fetch_secondary_phone_lookup
 
 
 SAMPLE_RESPONSE = {
@@ -112,24 +121,31 @@ class HealthCheckTests(APITestCase):
 
 
 class PhoneLookupTests(APITestCase):
-    def test_secondary_phone_request_matches_token_cookie_flow(self):
-        token_result = MagicMock(returncode=0, stdout='{"status":"ok","token":"test-token"}')
-        lookup_result = MagicMock(returncode=0, stdout='{"status":"ok","person":[]}')
+    def test_secondary_phone_request_uses_database_relay_configuration(self):
+        configuration = SecondaryRelayConfiguration.objects.create(
+            phone_endpoint='https://relay-example.trycloudflare.com/v1/lookups/phone',
+            name_endpoint='https://relay-example.trycloudflare.com/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+            timeout_seconds=17,
+        )
+        relay_response = MagicMock()
+        relay_response.read.return_value = json.dumps(
+            {'status': 'not_found', 'message': 'No records found.', 'result_count': 0, 'persons': []}
+        ).encode()
+        relay_response.__enter__.return_value = relay_response
 
-        with patch('lookups.services.subprocess.run', side_effect=[token_result, lookup_result]) as curl_run:
+        with patch('lookups.services.urlopen', return_value=relay_response) as relay_request:
             result = fetch_secondary_phone_lookup('5405605817')
 
-        token_command = curl_run.call_args_list[0].args[0]
-        lookup_command = curl_run.call_args_list[1].args[0]
-        self.assertEqual(token_command[0], 'curl')
-        self.assertEqual(lookup_command[0], 'curl')
-        self.assertIn('Referer: https://infolookup.site/', token_command)
-        self.assertIn('Referer: https://infolookup.site/', lookup_command)
-        self.assertIn('x=5405605817', lookup_command)
-        self.assertIn('_t=test-token', lookup_command)
-        self.assertNotIn('_s', ' '.join(lookup_command))
-        self.assertEqual(token_command[token_command.index('-c') + 1], token_command[token_command.index('-b') + 1])
-        self.assertEqual(token_command[token_command.index('-b') + 1], lookup_command[lookup_command.index('-b') + 1])
+        request = relay_request.call_args.args[0]
+        self.assertEqual(request.full_url, configuration.phone_endpoint)
+        self.assertEqual(request.method, 'POST')
+        self.assertEqual(json.loads(request.data), {'phone_number': '5405605817'})
+        self.assertEqual(
+            request.headers['Authorization'],
+            'Bearer relay-token-with-at-least-thirty-two-characters',
+        )
+        self.assertEqual(relay_request.call_args.kwargs['timeout'], 17)
         self.assertEqual(result['status'], 'not_found')
 
     def test_phone_lookup_falls_back_after_empty_primary_and_caches_secondary(self):
@@ -340,6 +356,27 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.data['data']['result_count'], 0)
         secondary_fetch.assert_not_called()
 
+    def test_name_lookup_does_not_fall_back_when_address_contains_zip(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup', return_value=EMPTY_RESPONSE),
+            patch('lookups.services.fetch_secondary_name_lookup') as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {
+                    'full_name': 'John Doe',
+                    'address_or_zip': 'Brooklyn, NY 10001',
+                    'turnstile_token': 'test-token',
+                },
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'primary')
+        secondary_fetch.assert_not_called()
+
     def test_name_address_lookup_fetches_and_caches_upstream_response(self):
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}) as turnstile,
@@ -427,6 +464,123 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['status'], 'error')
 
+
+class SecondaryRelayConfigurationTests(APITestCase):
+    def test_configuration_rejects_insecure_or_wrong_paths(self):
+        insecure = SecondaryRelayConfiguration(
+            phone_endpoint='http://relay.example/v1/lookups/phone',
+            name_endpoint='https://relay.example/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+        wrong_path = SecondaryRelayConfiguration(
+            phone_endpoint='https://relay.example/v1/lookups/phone',
+            name_endpoint='https://relay.example/api/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+
+        with self.assertRaises(ValidationError):
+            insecure.full_clean()
+        with self.assertRaises(ValidationError):
+            wrong_path.full_clean()
+
+    def test_only_one_relay_configuration_can_exist(self):
+        SecondaryRelayConfiguration.objects.create(
+            phone_endpoint='https://one.example/v1/lookups/phone',
+            name_endpoint='https://one.example/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+
+        with self.assertRaises(ValidationError):
+            SecondaryRelayConfiguration.objects.create(
+                phone_endpoint='https://two.example/v1/lookups/phone',
+                name_endpoint='https://two.example/v1/lookups/name',
+                api_token='another-token-with-at-least-thirty-two-characters',
+            )
+
+    def test_admin_form_keeps_existing_token_when_left_blank(self):
+        configuration = SecondaryRelayConfiguration.objects.create(
+            phone_endpoint='https://one.example/v1/lookups/phone',
+            name_endpoint='https://one.example/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+        form = SecondaryRelayConfigurationForm(
+            instance=configuration,
+            data={
+                'enabled': True,
+                'phone_endpoint': 'https://two.example/v1/lookups/phone',
+                'name_endpoint': 'https://two.example/v1/lookups/name',
+                'api_token': '',
+                'timeout_seconds': 20,
+            },
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(saved.api_token, 'relay-token-with-at-least-thirty-two-characters')
+        self.assertEqual(saved.phone_endpoint, 'https://two.example/v1/lookups/phone')
+
+    def test_name_relay_uses_database_endpoint_and_compacts_response(self):
+        SecondaryRelayConfiguration.objects.create(
+            phone_endpoint='https://relay.example/v1/lookups/phone',
+            name_endpoint='https://relay.example/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+        relay_response = MagicMock()
+        relay_response.read.return_value = json.dumps(
+            {
+                'status': 'success',
+                'message': 'Found 1 result(s)',
+                'result_count': 1,
+                'persons': [
+                    {
+                        'id': 'relay-name-1',
+                        'name': 'Jane Doe',
+                        'age': 42,
+                        'zipcode': '10001',
+                        'state': 'ny',
+                        'email': 'jane@example.com',
+                        'relatives': ['must not pass through'],
+                    }
+                ],
+            }
+        ).encode()
+        relay_response.__enter__.return_value = relay_response
+
+        with patch('lookups.services.urlopen', return_value=relay_response) as relay_request:
+            result = fetch_secondary_name_lookup('Jane', 'Doe', 'NY')
+
+        request = relay_request.call_args.args[0]
+        self.assertEqual(request.full_url, 'https://relay.example/v1/lookups/name')
+        self.assertEqual(
+            json.loads(request.data),
+            {'first_name': 'Jane', 'last_name': 'Doe', 'state': 'NY'},
+        )
+        self.assertEqual(
+            result['data']['persons'][0],
+            {
+                'id': 'relay-name-1',
+                'name': 'Jane Doe',
+                'age': 42,
+                'zipcode': '10001',
+                'state': 'NY',
+                'email': 'jane@example.com',
+                'is_secondary': True,
+            },
+        )
+
+    def test_disabled_or_missing_relay_is_unavailable(self):
+        SecondaryRelayConfiguration.objects.create(
+            enabled=False,
+            phone_endpoint='https://relay.example/v1/lookups/phone',
+            name_endpoint='https://relay.example/v1/lookups/name',
+            api_token='relay-token-with-at-least-thirty-two-characters',
+        )
+
+        with self.assertRaisesRegex(UpstreamLookupError, 'not configured'):
+            fetch_secondary_phone_lookup('2025550123')
+
+
+class NameAddressValidationTests(APITestCase):
     def test_name_address_lookup_rejects_invalid_name_characters(self):
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}),

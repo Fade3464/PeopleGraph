@@ -1211,7 +1211,7 @@ function SearchPanel(props: SearchPanelProps) {
                   role="tooltip"
                   className="pointer-events-none absolute left-0 top-[calc(100%+0.75rem)] z-30 max-w-sm rounded-xl border border-white/10 bg-[#101827]/95 px-3 py-2 text-xs leading-5 text-muted-foreground opacity-0 shadow-panel backdrop-blur-xl transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
                 >
-                  Include a state (for example, Boston, MA) for more precise results and secondary coverage. ZIP-only searches use the primary source only.
+                  Include a state (for example, Boston, MA) for more precise results and secondary coverage. Locations containing a ZIP use the primary source only.
                 </div>
               </div>
             </label>

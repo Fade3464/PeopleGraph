@@ -12,6 +12,7 @@ PeopleGraph is a production-focused people lookup portal. The project includes a
 - Database-backed phone result cache to avoid repeated upstream API calls
 - Database-backed name/address result cache keyed by normalized first name, last name, and exact zip/address input
 - Database-backed TCPA blacklist cache for phone risk status
+- Database-managed authenticated secondary relay for phone and name/state fallback
 - Phone lookup audit trail with timestamp, cache-source flags, and request IP
 - Loading, empty, error, and results states
 - Dark teal responsive UI using Tailwind CSS and shadcn-style components
@@ -47,6 +48,7 @@ PeopleGraph/
       globals.css       # Global theme and utilities
     components/ui/      # Local UI primitives
     lib/                # Shared frontend utilities
+  infolookup-relay/     # Standalone Pakistani egress relay and automatic tunnel
 ```
 
 ## Frontend Setup
@@ -127,6 +129,17 @@ CALLLOOM_PHONE_LOOKUP_URL=https://api.callloom.com/api/people-lookup/get-phone-l
 CALLLOOM_NAME_ADDR_LOOKUP_URL=https://api.callloom.com/api/people-lookup/get-phone-lookup/
 CALLLOOM_TIMEOUT_SECONDS=20
 ```
+
+The secondary relay endpoints and bearer token are stored in the database rather than the environment. After migrations, open the private Django admin and create the single **Secondary relay configuration** using the Pakistani server's latest `infolookup-relay/tunnel-state/current-tunnel.env` values:
+
+```text
+Phone endpoint: https://<current-tunnel>/v1/lookups/phone
+Name endpoint:  https://<current-tunnel>/v1/lookups/name
+API token:      the Pakistani relay RELAY_API_TOKEN
+Enabled:        yes
+```
+
+The token is not rendered back into the admin form. Leave it blank while editing to retain the current token. Quick Tunnel hostnames can change after a relay restart, so update both endpoint fields from the latest state file when that happens.
 
 Configure Cloudflare Turnstile:
 
@@ -226,6 +239,7 @@ DJANGO_SECURE_HSTS_SECONDS=31536000
 DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS=True
 DJANGO_SECURE_HSTS_PRELOAD=True
 LOOKUP_THROTTLE_RATE=30/min
+SECONDARY_RELAY_MAX_RESPONSE_BYTES=2097152
 ```
 
 If the backend is behind a trusted reverse proxy or load balancer, enable proxy headers only at that edge:
@@ -265,6 +279,8 @@ chmod 600 .env.production
 docker compose --env-file .env.production build
 docker compose --env-file .env.production up -d
 ```
+
+The backend entrypoint applies the relay-configuration migration automatically. After deployment, configure the relay through the private Django admin URL. No `INFOLOOKUP_*` values are needed in `.env.production`.
 
 Read the full deployment guide before production launch:
 

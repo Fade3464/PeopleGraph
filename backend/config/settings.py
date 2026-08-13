@@ -45,6 +45,18 @@ def env_list(name, default=''):
     return [item.strip() for item in os.environ.get(name, default).split(',') if item.strip()]
 
 
+def env_int(name, default, minimum=None, maximum=None):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise ImproperlyConfigured(f'{name} must be an integer.') from exc
+    if minimum is not None and value < minimum:
+        raise ImproperlyConfigured(f'{name} must be at least {minimum}.')
+    if maximum is not None and value > maximum:
+        raise ImproperlyConfigured(f'{name} must be at most {maximum}.')
+    return value
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -243,6 +255,12 @@ if not DEBUG and any(origin.startswith('http://') for origin in CORS_ALLOWED_ORI
     raise ImproperlyConfigured('Production CORS origins must use HTTPS.')
 
 LOOKUP_THROTTLE_RATE = os.environ.get('LOOKUP_THROTTLE_RATE', '30/min')
+SECONDARY_RELAY_MAX_RESPONSE_BYTES = env_int(
+    'SECONDARY_RELAY_MAX_RESPONSE_BYTES',
+    2097152,
+    minimum=1024,
+    maximum=10485760,
+)
 
 CORS_ALLOWED_ORIGINS = CORS_ALLOWED_ORIGINS
 

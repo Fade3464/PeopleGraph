@@ -113,6 +113,18 @@ docker compose --env-file .env.production up -d
 
 The backend entrypoint waits for PostgreSQL, runs migrations, collects static files, then starts Gunicorn.
 
+### Configure the secondary relay
+
+After the first successful start, open the private Django admin URL and create the single **Secondary relay configuration**. Copy the current values from `tunnel-state/current-tunnel.env` on the Pakistani relay server:
+
+```text
+PHONE_RELAY_ENDPOINT -> Phone endpoint
+NAME_RELAY_ENDPOINT  -> Name endpoint
+RELAY_API_TOKEN      -> API token
+```
+
+Keep **Enabled** selected. The backend reads this row only when the primary provider has no results. Name fallback runs only when the submitted location contains a valid US state and no ZIP code. If Cloudflared assigns a new Quick Tunnel hostname, update both endpoint fields in Django admin; no image rebuild or environment-file change is required.
+
 Check status:
 
 ```bash
