@@ -569,6 +569,7 @@ function DashboardPanel() {
             ["24h", 24, "Last 24 hours"],
             ["7d", 24 * 7, "Last 7 days"],
             ["30d", 24 * 30, "Last 30 days"],
+            ["90d", 24 * 90, "Last 90 days"],
           ].map(([key, hours, label]) => (
             <button
               key={key}
@@ -753,6 +754,7 @@ function ExportLogsPanel() {
                 ["24h", 24, "Last 24 hours"],
                 ["7d", 24 * 7, "Last 7 days"],
                 ["30d", 24 * 30, "Last 30 days"],
+                ["90d", 24 * 90, "Last 90 days"],
               ].map(([key, hours, label]) => (
                 <button
                   key={key}

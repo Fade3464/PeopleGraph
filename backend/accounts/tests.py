@@ -128,6 +128,24 @@ class FeedbackTests(TestCase):
 
 
 class ExportLookupResultsTests(TestCase):
+    def test_staff_can_export_a_range_longer_than_31_days(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
+        client = Client()
+        client.force_login(user)
+        now_ny = timezone.now().astimezone(ZoneInfo('America/New_York'))
+
+        response = client.get(
+            '/api/v1/auth/exports/lookup-results/',
+            {
+                'from': (now_ny - timedelta(days=90)).strftime('%Y-%m-%dT%H:%M'),
+                'to': now_ny.strftime('%Y-%m-%dT%H:%M'),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/csv')
+
     def test_staff_can_export_cached_lookup_results_from_audit_range(self):
         User = get_user_model()
         user = User.objects.create_user(
@@ -203,6 +221,24 @@ class ExportLookupResultsTests(TestCase):
 
 
 class DashboardSecurityTests(TestCase):
+    def test_staff_can_view_a_range_longer_than_31_days(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
+        client = Client()
+        client.force_login(user)
+        now_ny = timezone.now().astimezone(ZoneInfo('America/New_York'))
+
+        response = client.get(
+            '/api/v1/auth/dashboard/phone-lookups/',
+            {
+                'from': (now_ny - timedelta(days=90)).strftime('%Y-%m-%dT%H:%M'),
+                'to': now_ny.strftime('%Y-%m-%dT%H:%M'),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['status'], 'success')
+
     def test_non_staff_cannot_access_dashboard(self):
         User = get_user_model()
         user = User.objects.create_user(username='user@example.com', password='password')

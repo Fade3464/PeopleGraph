@@ -24,8 +24,6 @@ from lookups.models import PhoneLookupAudit, PhoneLookupCache
 
 
 NEW_YORK_TIMEZONE = ZoneInfo('America/New_York')
-MAX_DASHBOARD_RANGE_DAYS = 31
-MAX_EXPORT_RANGE_DAYS = 31
 MAX_FEEDBACK_DETAILS_LENGTH = 5000
 MAX_FEEDBACK_SUGGESTION_LENGTH = 3000
 MAX_FEEDBACK_FIELD_LENGTH = 160
@@ -131,12 +129,6 @@ def phone_lookup_dashboard(request):
     if from_dt >= to_dt:
         return JsonResponse({'status': 'error', 'message': 'From must be earlier than To.'}, status=400)
 
-    if to_dt - from_dt > timedelta(days=MAX_DASHBOARD_RANGE_DAYS):
-        return JsonResponse(
-            {'status': 'error', 'message': f'Date range cannot exceed {MAX_DASHBOARD_RANGE_DAYS} days.'},
-            status=400,
-        )
-
     from_utc = from_dt.astimezone(datetime_timezone.utc)
     to_utc = to_dt.astimezone(datetime_timezone.utc)
     audits = PhoneLookupAudit.objects.filter(timestamp__gte=from_utc, timestamp__lte=to_utc)
@@ -195,12 +187,6 @@ def export_lookup_results(request):
 
     if from_dt >= to_dt:
         return JsonResponse({'status': 'error', 'message': 'From must be earlier than To.'}, status=400)
-
-    if to_dt - from_dt > timedelta(days=MAX_EXPORT_RANGE_DAYS):
-        return JsonResponse(
-            {'status': 'error', 'message': f'Export range cannot exceed {MAX_EXPORT_RANGE_DAYS} days.'},
-            status=400,
-        )
 
     from_utc = from_dt.astimezone(datetime_timezone.utc)
     to_utc = to_dt.astimezone(datetime_timezone.utc)
