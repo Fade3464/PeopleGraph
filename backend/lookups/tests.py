@@ -1,5 +1,4 @@
 from unittest.mock import MagicMock, patch
-from urllib.parse import parse_qs, urlparse
 
 from django.test import override_settings
 from rest_framework.test import APITestCase
@@ -113,28 +112,24 @@ class HealthCheckTests(APITestCase):
 
 
 class PhoneLookupTests(APITestCase):
-    @patch.dict('os.environ', {'INFOLOOKUP_USER_AGENT': 'curl/test'}, clear=False)
     def test_secondary_phone_request_matches_token_cookie_flow(self):
-        token_response = MagicMock()
-        token_response.__enter__.return_value.read.return_value = b'{"status":"ok","token":"test-token"}'
-        lookup_response = MagicMock()
-        lookup_response.__enter__.return_value.read.return_value = b'{"status":"ok","person":[]}'
-        opener = MagicMock()
-        opener.open.side_effect = [token_response, lookup_response]
+        token_result = MagicMock(returncode=0, stdout='{"status":"ok","token":"test-token"}')
+        lookup_result = MagicMock(returncode=0, stdout='{"status":"ok","person":[]}')
 
-        with patch('lookups.services.build_opener', return_value=opener):
+        with patch('lookups.services.subprocess.run', side_effect=[token_result, lookup_result]) as curl_run:
             result = fetch_secondary_phone_lookup('5405605817')
 
-        token_request = opener.open.call_args_list[0].args[0]
-        lookup_request = opener.open.call_args_list[1].args[0]
-        lookup_query = parse_qs(urlparse(lookup_request.full_url).query)
-        self.assertEqual(token_request.get_header('User-agent'), 'curl/test')
-        self.assertEqual(lookup_request.get_header('User-agent'), 'curl/test')
-        self.assertEqual(token_request.get_header('Referer'), 'https://infolookup.site/')
-        self.assertEqual(lookup_request.get_header('Referer'), 'https://infolookup.site/')
-        self.assertIsNone(token_request.get_header('Accept'))
-        self.assertIsNone(lookup_request.get_header('Accept'))
-        self.assertEqual(lookup_query, {'x': ['5405605817'], '_t': ['test-token']})
+        token_command = curl_run.call_args_list[0].args[0]
+        lookup_command = curl_run.call_args_list[1].args[0]
+        self.assertEqual(token_command[0], 'curl')
+        self.assertEqual(lookup_command[0], 'curl')
+        self.assertIn('Referer: https://infolookup.site/', token_command)
+        self.assertIn('Referer: https://infolookup.site/', lookup_command)
+        self.assertIn('x=5405605817', lookup_command)
+        self.assertIn('_t=test-token', lookup_command)
+        self.assertNotIn('_s', ' '.join(lookup_command))
+        self.assertEqual(token_command[token_command.index('-c') + 1], token_command[token_command.index('-b') + 1])
+        self.assertEqual(token_command[token_command.index('-b') + 1], lookup_command[lookup_command.index('-b') + 1])
         self.assertEqual(result['status'], 'not_found')
 
     def test_phone_lookup_falls_back_after_empty_primary_and_caches_secondary(self):

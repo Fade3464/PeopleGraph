@@ -2,12 +2,13 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import uuid
-from http.cookiejar import CookieJar
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import HTTPCookieProcessor, Request, build_opener, urlopen
+from urllib.request import Request, urlopen
 
 from django.db import transaction
 from django.utils import timezone
@@ -418,43 +419,80 @@ def fetch_secondary_phone_lookup(phone_digits: str) -> dict[str, Any]:
     token_url = os.environ.get('INFOLOOKUP_TOKEN_URL', f'{base_url}/lookup-token.php')
     endpoint = os.environ.get('INFOLOOKUP_PHONE_LOOKUP_URL', f'{base_url}/api/lookup')
     timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
-    user_agent = os.environ.get('INFOLOOKUP_USER_AGENT', 'curl/8.10.1')
-    opener = build_opener(HTTPCookieProcessor(CookieJar()))
-    token_request = Request(
-        token_url,
-        headers={'Referer': f'{base_url}/', 'User-Agent': user_agent},
-        method='GET',
-    )
 
-    request_stage = 'token endpoint'
-    try:
-        with opener.open(token_request, timeout=timeout) as response:
-            token_payload = json.loads(response.read().decode('utf-8'))
+    with tempfile.TemporaryDirectory(prefix='peoplegraph-infolookup-') as temp_dir:
+        cookie_jar = os.path.join(temp_dir, 'cookies.txt')
+        token_body = run_secondary_curl(
+            [
+                '-c', cookie_jar,
+                '-b', cookie_jar,
+                '-H', f'Referer: {base_url}/',
+                '--', token_url,
+            ],
+            timeout,
+            'token endpoint',
+        )
+        try:
+            token_payload = json.loads(token_body)
+        except json.JSONDecodeError as exc:
+            raise UpstreamLookupError('Secondary phone token endpoint returned invalid JSON.') from exc
+
         security_token = str(token_payload.get('token') or '').strip()
         if not security_token:
             raise UpstreamLookupError('Secondary phone provider did not return a security token.')
 
-        query = urlencode({'x': phone_digits, '_t': security_token})
-        lookup_request = Request(
-            f'{endpoint}?{query}',
-            headers={
-                'Referer': f'{base_url}/',
-                'User-Agent': user_agent,
-            },
-            method='GET',
+        lookup_body = run_secondary_curl(
+            [
+                '-b', cookie_jar,
+                '-H', f'Referer: {base_url}/',
+                '-G',
+                '--data-urlencode', f'x={phone_digits}',
+                '--data-urlencode', f'_t={security_token}',
+                '--', endpoint,
+            ],
+            timeout,
+            'lookup endpoint',
         )
-        request_stage = 'lookup endpoint'
-        with opener.open(lookup_request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode('utf-8'))
-    except HTTPError as exc:
-        exc.read()
-        raise UpstreamLookupError(f'Secondary phone {request_stage} returned {exc.code}.') from exc
-    except (URLError, TimeoutError) as exc:
-        raise UpstreamLookupError('Secondary phone provider is unavailable.') from exc
-    except json.JSONDecodeError as exc:
-        raise UpstreamLookupError('Secondary phone provider returned an invalid response.') from exc
+        try:
+            payload = json.loads(lookup_body)
+        except json.JSONDecodeError as exc:
+            raise UpstreamLookupError('Secondary phone lookup endpoint returned invalid JSON.') from exc
 
     return normalize_secondary_response(payload, payload.get('person'), 'phone')
+
+
+def run_secondary_curl(arguments: list[str], timeout: float, request_stage: str) -> str:
+    command = [
+        'curl',
+        '-sS',
+        '--fail-with-body',
+        '--max-time',
+        str(timeout),
+        *arguments,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 2,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise UpstreamLookupError('Secondary phone lookup client is unavailable.') from exc
+    except subprocess.TimeoutExpired as exc:
+        raise UpstreamLookupError(f'Secondary phone {request_stage} timed out.') from exc
+
+    if completed.returncode != 0:
+        status_match = re.search(r'\b([45]\d{2})\b', completed.stderr or '')
+        if status_match:
+            raise UpstreamLookupError(
+                f'Secondary phone {request_stage} returned {status_match.group(1)}.'
+            )
+        raise UpstreamLookupError(
+            f'Secondary phone {request_stage} failed (curl exit {completed.returncode}).'
+        )
+    return completed.stdout
 
 
 def fetch_secondary_name_lookup(first_name: str, last_name: str, state: str) -> dict[str, Any]:
