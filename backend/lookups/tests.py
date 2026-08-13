@@ -1,9 +1,11 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .models import BlacklistLookupCache, NameAddrLookupCache, PhoneLookupAudit, PhoneLookupCache
+from .services import fetch_secondary_phone_lookup
 
 
 SAMPLE_RESPONSE = {
@@ -111,6 +113,30 @@ class HealthCheckTests(APITestCase):
 
 
 class PhoneLookupTests(APITestCase):
+    @patch.dict('os.environ', {'INFOLOOKUP_USER_AGENT': 'curl/test'}, clear=False)
+    def test_secondary_phone_request_matches_token_cookie_flow(self):
+        token_response = MagicMock()
+        token_response.__enter__.return_value.read.return_value = b'{"status":"ok","token":"test-token"}'
+        lookup_response = MagicMock()
+        lookup_response.__enter__.return_value.read.return_value = b'{"status":"ok","person":[]}'
+        opener = MagicMock()
+        opener.open.side_effect = [token_response, lookup_response]
+
+        with patch('lookups.services.build_opener', return_value=opener):
+            result = fetch_secondary_phone_lookup('5405605817')
+
+        token_request = opener.open.call_args_list[0].args[0]
+        lookup_request = opener.open.call_args_list[1].args[0]
+        lookup_query = parse_qs(urlparse(lookup_request.full_url).query)
+        self.assertEqual(token_request.get_header('User-agent'), 'curl/test')
+        self.assertEqual(lookup_request.get_header('User-agent'), 'curl/test')
+        self.assertEqual(token_request.get_header('Referer'), 'https://infolookup.site/')
+        self.assertEqual(lookup_request.get_header('Referer'), 'https://infolookup.site/')
+        self.assertIsNone(token_request.get_header('Accept'))
+        self.assertIsNone(lookup_request.get_header('Accept'))
+        self.assertEqual(lookup_query, {'x': ['5405605817'], '_t': ['test-token']})
+        self.assertEqual(result['status'], 'not_found')
+
     def test_phone_lookup_falls_back_after_empty_primary_and_caches_secondary(self):
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}),

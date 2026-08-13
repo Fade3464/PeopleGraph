@@ -418,13 +418,15 @@ def fetch_secondary_phone_lookup(phone_digits: str) -> dict[str, Any]:
     token_url = os.environ.get('INFOLOOKUP_TOKEN_URL', f'{base_url}/lookup-token.php')
     endpoint = os.environ.get('INFOLOOKUP_PHONE_LOOKUP_URL', f'{base_url}/api/lookup')
     timeout = float(os.environ.get('INFOLOOKUP_TIMEOUT_SECONDS', '10'))
+    user_agent = os.environ.get('INFOLOOKUP_USER_AGENT', 'curl/8.10.1')
     opener = build_opener(HTTPCookieProcessor(CookieJar()))
     token_request = Request(
         token_url,
-        headers={'Accept': 'application/json', 'Referer': f'{base_url}/'},
+        headers={'Referer': f'{base_url}/', 'User-Agent': user_agent},
         method='GET',
     )
 
+    request_stage = 'token endpoint'
     try:
         with opener.open(token_request, timeout=timeout) as response:
             token_payload = json.loads(response.read().decode('utf-8'))
@@ -436,16 +438,17 @@ def fetch_secondary_phone_lookup(phone_digits: str) -> dict[str, Any]:
         lookup_request = Request(
             f'{endpoint}?{query}',
             headers={
-                'Accept': 'application/json',
                 'Referer': f'{base_url}/',
+                'User-Agent': user_agent,
             },
             method='GET',
         )
+        request_stage = 'lookup endpoint'
         with opener.open(lookup_request, timeout=timeout) as response:
             payload = json.loads(response.read().decode('utf-8'))
     except HTTPError as exc:
         exc.read()
-        raise UpstreamLookupError(f'Secondary phone provider returned {exc.code}.') from exc
+        raise UpstreamLookupError(f'Secondary phone {request_stage} returned {exc.code}.') from exc
     except (URLError, TimeoutError) as exc:
         raise UpstreamLookupError('Secondary phone provider is unavailable.') from exc
     except json.JSONDecodeError as exc:
