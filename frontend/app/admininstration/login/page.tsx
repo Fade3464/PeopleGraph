@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowRight, Fingerprint, Loader2, LockKeyhole, ShieldCheck, UserRound } from "lucide-react";
 
@@ -10,6 +11,7 @@ import { Input } from "@/components/ui/input";
 type LoginState = "idle" | "loading" | "success" | "error";
 
 export default function AdministrationLoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [state, setState] = useState<LoginState>("idle");
@@ -50,7 +52,7 @@ export default function AdministrationLoginPage() {
 
       setState("success");
       setMessage("Login successful. Opening administration console...");
-      window.location.assign("/admininstration");
+      router.push("/admininstration");
     } catch {
       setState("error");
       setMessage("Administration login is unavailable. Please try again shortly.");

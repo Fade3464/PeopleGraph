@@ -5,8 +5,10 @@ from django.core.exceptions import ValidationError
 from .models import (
     BlacklistLookupCache,
     NameAddrLookupCache,
+    NameLookupAudit,
     PhoneLookupAudit,
     PhoneLookupCache,
+    LookupIPAccessDecision,
     SecondaryRelayConfiguration,
 )
 
@@ -72,17 +74,49 @@ class PhoneLookupAuditAdmin(admin.ModelAdmin):
         'timestamp',
         'phone_number',
         'public_ip',
+        'source',
+        'response_time_ms',
+        'successful_result',
         'fetched_from_dbcache',
         'fetched_from_bla_cache',
     )
     search_fields = ('phone_number', 'normalized_phone', 'public_ip')
-    list_filter = ('fetched_from_dbcache', 'fetched_from_bla_cache')
+    list_filter = ('successful_result', 'source', 'fetched_from_dbcache', 'fetched_from_bla_cache')
     readonly_fields = (
         'timestamp',
         'phone_number',
         'normalized_phone',
+        'source',
+        'response_time_ms',
+        'successful_result',
         'fetched_from_dbcache',
         'fetched_from_bla_cache',
+        'public_ip',
+    )
+
+
+@admin.register(NameLookupAudit)
+class NameLookupAuditAdmin(admin.ModelAdmin):
+    list_display = (
+        'timestamp',
+        'full_name',
+        'location',
+        'public_ip',
+        'source',
+        'response_time_ms',
+        'successful_result',
+        'fetched_from_dbcache',
+    )
+    search_fields = ('full_name', 'location', 'public_ip')
+    list_filter = ('successful_result', 'source', 'fetched_from_dbcache')
+    readonly_fields = (
+        'timestamp',
+        'full_name',
+        'location',
+        'source',
+        'response_time_ms',
+        'successful_result',
+        'fetched_from_dbcache',
         'public_ip',
     )
 
@@ -117,3 +151,14 @@ class SecondaryRelayConfigurationAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return super().has_add_permission(request) and not SecondaryRelayConfiguration.objects.exists()
+
+
+@admin.register(LookupIPAccessDecision)
+class LookupIPAccessDecisionAdmin(admin.ModelAdmin):
+    list_display = ('ip_address', 'country_code', 'country', 'allowed', 'checked_at', 'expires_at')
+    search_fields = ('ip_address', 'country_code', 'country')
+    list_filter = ('allowed', 'country_code', 'provider')
+    readonly_fields = ('ip_address', 'country_code', 'country', 'allowed', 'provider', 'checked_at', 'expires_at')
+
+    def has_add_permission(self, request):
+        return False

@@ -28,6 +28,8 @@ Authorization: Bearer <RELAY_API_TOKEN>
 
 `GET /health` reports only local application health. Cloudflare Tunnel connector health is available from `http://127.0.0.1:2000/ready` on the Pakistani host.
 
+`POST /v1/diagnostics/upstream` is bearer-authenticated and performs configured phone and name/state test lookups. It returns statuses only, never the resulting personal records, and caches diagnostics briefly to avoid excessive upstream traffic.
+
 ## Complete Pakistani-server setup
 
 ### 1. Prepare the service
@@ -42,6 +44,24 @@ openssl rand -hex 32
 ```
 
 Put the generated value in `.env` as `RELAY_API_TOKEN`. Save the same value in a password manager; PeopleGraph will need it later. Do not commit `.env`. No Cloudflare account or tunnel token is required for this automatic Quick Tunnel mode.
+
+For administration diagnostics, configure authorized test values:
+
+```dotenv
+DIAGNOSTIC_PHONE_NUMBER=2025550123
+DIAGNOSTIC_FIRST_NAME=Jane
+DIAGNOSTIC_LAST_NAME=Doe
+DIAGNOSTIC_STATE=NY
+DIAGNOSTIC_CACHE_SECONDS=60
+```
+
+To receive a Discord message whenever Cloudflared assigns a new hostname:
+
+```dotenv
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+The message body includes the relay API token and the complete new phone and name endpoints. Restrict access to the Discord channel and rotate both the webhook and relay token after any Discord or webhook compromise.
 
 ### 2. Start the relay and automatic tunnel
 

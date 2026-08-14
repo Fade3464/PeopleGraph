@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from http.client import HTTPException as HttpClientException
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from django.conf import settings
@@ -125,6 +126,15 @@ def validate_turnstile_token(token: str, remote_ip: str | None = None) -> dict[s
 
     if not verification.get('success'):
         raise TurnstileValidationError('Security verification failed. Please try again.')
+
+    if settings.TURNSTILE_EXPECTED_ACTION and verification.get('action') != settings.TURNSTILE_EXPECTED_ACTION:
+        raise TurnstileValidationError('Security verification failed. Please try again.')
+
+    if settings.TURNSTILE_ALLOWED_HOSTNAMES:
+        hostname = str(verification.get('hostname') or '').lower()
+        allowed_hostnames = {item.lower() for item in settings.TURNSTILE_ALLOWED_HOSTNAMES}
+        if hostname not in allowed_hostnames:
+            raise TurnstileValidationError('Security verification failed. Please try again.')
 
     return verification
 
@@ -472,6 +482,95 @@ def get_secondary_relay_configuration() -> RelayConfiguration:
         api_token=record['api_token'],
         timeout_seconds=record['timeout_seconds'],
     )
+
+
+def probe_secondary_relay() -> dict[str, Any]:
+    try:
+        configuration = get_secondary_relay_configuration()
+    except UpstreamLookupError:
+        return {
+            'status': 'not_configured',
+            'relay': 'not_configured',
+            'phone_api': 'unknown',
+            'name_api': 'unknown',
+        }
+
+    parsed = urlsplit(configuration.phone_endpoint)
+    health_endpoint = urlunsplit((parsed.scheme, parsed.netloc, '/health', '', ''))
+    hostname = parsed.hostname or ''
+    try:
+        health_payload = request_relay_status_endpoint(
+            health_endpoint,
+            configuration.timeout_seconds,
+        )
+        relay_ok = health_payload.get('status') == 'ok'
+    except UpstreamLookupError:
+        return {
+            'status': 'offline',
+            'relay': 'offline',
+            'phone_api': 'unknown',
+            'name_api': 'unknown',
+            'hostname': hostname,
+        }
+
+    try:
+        diagnostics = request_relay_status_endpoint(
+            urlunsplit((parsed.scheme, parsed.netloc, '/v1/diagnostics/upstream', '', '')),
+            configuration.timeout_seconds,
+            token=configuration.api_token,
+            method='POST',
+        )
+    except UpstreamLookupError:
+        diagnostics = {'status': 'error', 'checks': {}}
+
+    checks = diagnostics.get('checks') if isinstance(diagnostics.get('checks'), dict) else {}
+    phone_status = relay_probe_status(checks.get('phone'))
+    name_status = relay_probe_status(checks.get('name'))
+    overall = 'ok' if relay_ok and phone_status == 'ok' and name_status == 'ok' else 'degraded'
+    return {
+        'status': overall,
+        'relay': 'online' if relay_ok else 'offline',
+        'phone_api': phone_status,
+        'name_api': name_status,
+        'hostname': hostname,
+        'diagnostics_cached': bool(diagnostics.get('cached')),
+    }
+
+
+def request_relay_status_endpoint(endpoint, timeout_seconds, token=None, method='GET'):
+    headers = {'Accept': 'application/json', 'User-Agent': 'PeopleGraph-Relay-Monitor/1.0'}
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    request = Request(
+        endpoint,
+        data=b'' if method == 'POST' else None,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=min(timeout_seconds, 20)) as response:
+            body = response.read(65537)
+    except HTTPError as exc:
+        exc.read(65536)
+        raise UpstreamLookupError('Relay status endpoint rejected the request.') from exc
+    except (URLError, OSError, HttpClientException) as exc:
+        raise UpstreamLookupError('Relay status endpoint is unavailable.') from exc
+    if len(body) > 65536:
+        raise UpstreamLookupError('Relay status endpoint returned too much data.')
+    try:
+        payload = json.loads(body.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpstreamLookupError('Relay status endpoint returned invalid data.') from exc
+    if not isinstance(payload, dict):
+        raise UpstreamLookupError('Relay status endpoint returned invalid data.')
+    return payload
+
+
+def relay_probe_status(check):
+    if not isinstance(check, dict):
+        return 'unknown'
+    status_value = check.get('status')
+    return status_value if status_value in {'ok', 'error', 'not_configured'} else 'unknown'
 
 
 def request_secondary_relay(

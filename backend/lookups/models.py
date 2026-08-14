@@ -108,11 +108,16 @@ class BlacklistLookupCache(models.Model):
 
 
 class PhoneLookupAudit(models.Model):
+    SOURCE_CHOICES = PhoneLookupCache.PROVIDER_CHOICES
+
     timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
     phone_number = models.CharField(max_length=20)
     normalized_phone = models.CharField(max_length=16, db_index=True)
     fetched_from_dbcache = models.BooleanField(default=False, db_index=True)
     fetched_from_bla_cache = models.BooleanField(default=False, db_index=True)
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default='primary', db_index=True)
+    response_time_ms = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    successful_result = models.BooleanField(default=False, db_index=True)
     public_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
 
     class Meta:
@@ -120,10 +125,34 @@ class PhoneLookupAudit(models.Model):
         indexes = [
             models.Index(fields=['normalized_phone', '-timestamp']),
             models.Index(fields=['public_ip', '-timestamp']),
+            models.Index(fields=['source', '-timestamp']),
         ]
 
     def __str__(self):
         return f'{self.phone_number} from {self.public_ip or "unknown IP"} at {self.timestamp}'
+
+
+class NameLookupAudit(models.Model):
+    SOURCE_CHOICES = NameAddrLookupCache.PROVIDER_CHOICES
+
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+    full_name = models.CharField(max_length=255)
+    location = models.CharField(max_length=255)
+    fetched_from_dbcache = models.BooleanField(default=False, db_index=True)
+    source = models.CharField(max_length=16, choices=SOURCE_CHOICES, default='primary', db_index=True)
+    response_time_ms = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    successful_result = models.BooleanField(default=False, db_index=True)
+    public_ip = models.GenericIPAddressField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['source', '-timestamp']),
+            models.Index(fields=['public_ip', '-timestamp']),
+        ]
+
+    def __str__(self):
+        return f'{self.full_name} ({self.source}, {self.response_time_ms} ms)'
 
 
 class SecondaryRelayConfiguration(models.Model):
@@ -178,3 +207,24 @@ class SecondaryRelayConfiguration(models.Model):
     def __str__(self):
         status = 'enabled' if self.enabled else 'disabled'
         return f'Secondary lookup relay ({status})'
+
+
+class LookupIPAccessDecision(models.Model):
+    ip_address = models.GenericIPAddressField(unique=True, db_index=True)
+    country_code = models.CharField(max_length=2, blank=True, db_index=True)
+    country = models.CharField(max_length=100, blank=True)
+    allowed = models.BooleanField(default=False, db_index=True)
+    provider = models.CharField(max_length=32, default='ipinfo-lite')
+    checked_at = models.DateTimeField(auto_now=True, db_index=True)
+    expires_at = models.DateTimeField(db_index=True)
+
+    class Meta:
+        ordering = ['-checked_at']
+        indexes = [
+            models.Index(fields=['allowed', 'expires_at']),
+            models.Index(fields=['country_code', '-checked_at']),
+        ]
+
+    def __str__(self):
+        decision = 'allowed' if self.allowed else 'blocked'
+        return f'{self.ip_address} ({self.country_code or "unknown"}, {decision})'

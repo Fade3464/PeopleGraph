@@ -1,14 +1,43 @@
 import importlib
 import os
-from unittest.mock import patch
+import json
+import asyncio
+from unittest.mock import MagicMock, patch
 
-from fastapi.testclient import TestClient
+import httpx
+import pytest
 
 
 os.environ.setdefault('RELAY_API_TOKEN', 'test-token-with-at-least-thirty-two-characters')
 relay = importlib.import_module('app')
 tunnel_manager = importlib.import_module('tunnel_manager')
-client = TestClient(relay.app)
+
+
+class ASGITestClient:
+    def request(self, method, path, **kwargs):
+        async def send_request():
+            transport = httpx.ASGITransport(app=relay.app)
+            async with httpx.AsyncClient(transport=transport, base_url='http://testserver') as session:
+                return await session.request(method, path, **kwargs)
+
+        return asyncio.run(send_request())
+
+    def get(self, path, **kwargs):
+        return self.request('GET', path, **kwargs)
+
+    def post(self, path, **kwargs):
+        return self.request('POST', path, **kwargs)
+
+
+client = ASGITestClient()
+
+
+@pytest.fixture(autouse=True)
+def run_blocking_calls_inline(monkeypatch):
+    async def inline(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(relay.asyncio, 'to_thread', inline)
 
 
 def auth_headers():
@@ -19,6 +48,32 @@ def test_health_is_available():
     response = client.get('/health')
     assert response.status_code == 200
     assert response.json()['status'] == 'ok'
+
+
+def test_upstream_diagnostics_requires_authentication():
+    response = client.post('/v1/diagnostics/upstream')
+    assert response.status_code == 401
+
+
+def test_upstream_diagnostics_probe_both_apis_without_returning_records():
+    relay.diagnostic_cached_at = 0
+    relay.diagnostic_cached_response = None
+    with (
+        patch.object(relay, 'DIAGNOSTIC_PHONE_NUMBER', '2025550123'),
+        patch.object(relay, 'DIAGNOSTIC_FIRST_NAME', 'Jane'),
+        patch.object(relay, 'DIAGNOSTIC_LAST_NAME', 'Doe'),
+        patch.object(relay, 'DIAGNOSTIC_STATE', 'NY'),
+        patch.object(relay, 'fetch_infolookup_phone', return_value={'status': 'ok', 'person': [{'name': 'Hidden'}]}),
+        patch.object(relay, 'fetch_infolookup_name', return_value={'status': 'ok', 'results': [{'name': 'Hidden'}]}),
+    ):
+        response = client.post('/v1/diagnostics/upstream', headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()['status'] == 'ok'
+    assert response.json()['checks']['phone']['status'] == 'ok'
+    assert response.json()['checks']['name']['status'] == 'ok'
+    assert 'person' not in response.text
+    assert 'Hidden' not in response.text
 
 
 def test_lookup_requires_authentication():
@@ -204,3 +259,28 @@ def test_tunnel_manager_extracts_and_saves_current_endpoints(tmp_path):
     contents = state_file.read_text(encoding='utf-8')
     assert 'PHONE_RELAY_ENDPOINT=https://example-relay.trycloudflare.com/v1/lookups/phone' in contents
     assert 'NAME_RELAY_ENDPOINT=https://example-relay.trycloudflare.com/v1/lookups/name' in contents
+
+
+def test_discord_notification_sends_endpoints_and_token_in_message_body():
+    response = MagicMock()
+    response.read.return_value = b''
+    response.__enter__.return_value = response
+    with (
+        patch.object(
+            tunnel_manager,
+            'DISCORD_WEBHOOK_URL',
+            'https://discord.com/api/webhooks/123/secret',
+        ),
+        patch.object(tunnel_manager, 'RELAY_API_TOKEN', 'relay-secret-token'),
+        patch.object(tunnel_manager, 'urlopen', return_value=response) as send,
+    ):
+        sent = tunnel_manager.notify_discord('https://example-relay.trycloudflare.com')
+
+    assert sent is True
+    request = send.call_args.args[0]
+    payload = json.loads(request.data)
+    message = payload['content']
+    assert 'https://example-relay.trycloudflare.com/v1/lookups/phone' in message
+    assert 'https://example-relay.trycloudflare.com/v1/lookups/name' in message
+    assert 'relay-secret-token' in message
+    assert payload['allowed_mentions'] == {'parse': []}

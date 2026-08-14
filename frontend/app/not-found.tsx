@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowLeft, Home, Search, ShieldAlert } from "lucide-react";
+import { Home, Search, ShieldAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 

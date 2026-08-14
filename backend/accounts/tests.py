@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import get_user_model
@@ -8,7 +9,7 @@ from django.test import Client, TestCase
 from django.utils import timezone
 
 from .models import Feedback
-from lookups.models import PhoneLookupAudit, PhoneLookupCache
+from lookups.models import NameLookupAudit, PhoneLookupAudit, PhoneLookupCache
 
 
 class FeedbackTests(TestCase):
@@ -221,6 +222,84 @@ class ExportLookupResultsTests(TestCase):
 
 
 class DashboardSecurityTests(TestCase):
+    def test_dashboard_reports_weighted_primary_and_secondary_response_times(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
+        PhoneLookupAudit.objects.create(
+            phone_number='(202) 555-0100',
+            normalized_phone='+12025550100',
+            source='primary',
+            response_time_ms=100,
+            successful_result=True,
+        )
+        NameLookupAudit.objects.create(
+            full_name='Jane Doe',
+            location='NY',
+            source='primary',
+            response_time_ms=300,
+            successful_result=True,
+        )
+        PhoneLookupAudit.objects.create(
+            phone_number='(202) 555-0101',
+            normalized_phone='+12025550101',
+            source='secondary',
+            response_time_ms=900,
+        )
+        client = Client()
+        client.force_login(user)
+        now_ny = timezone.now().astimezone(ZoneInfo('America/New_York'))
+
+        response = client.get(
+            '/api/v1/auth/dashboard/phone-lookups/',
+            {
+                'from': (now_ny - timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M'),
+                'to': (now_ny + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M'),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        performance = response.json()['performance']
+        self.assertEqual(performance['primary'], {'average_response_time_ms': 200.0, 'samples': 2})
+        self.assertEqual(performance['secondary'], {'average_response_time_ms': 900.0, 'samples': 1})
+        self.assertEqual(
+            response.json()['success_rate'],
+            {'percentage': 66.7, 'successful': 2, 'total': 3},
+        )
+
+    def test_staff_dashboard_can_probe_relay_health(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
+        client = Client()
+        client.force_login(user)
+
+        with patch(
+            'accounts.views.probe_secondary_relay',
+            return_value={
+                'status': 'ok',
+                'relay': 'online',
+                'phone_api': 'ok',
+                'name_api': 'ok',
+                'hostname': 'relay.trycloudflare.com',
+            },
+        ) as probe:
+            response = client.get('/api/v1/auth/dashboard/relay-health/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['relay'], 'online')
+        probe.assert_called_once_with()
+
+    def test_non_staff_cannot_trigger_relay_probe(self):
+        User = get_user_model()
+        user = User.objects.create_user(username='user@example.com', password='password')
+        client = Client()
+        client.force_login(user)
+
+        with patch('accounts.views.probe_secondary_relay') as probe:
+            response = client.get('/api/v1/auth/dashboard/relay-health/')
+
+        self.assertEqual(response.status_code, 403)
+        probe.assert_not_called()
+
     def test_staff_can_view_a_range_longer_than_31_days(self):
         User = get_user_model()
         user = User.objects.create_user(username='admin@example.com', password='password', is_staff=True)
@@ -259,3 +338,28 @@ class DashboardSecurityTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()['status'], 'success')
+
+
+class AdminLoginSecurityTests(TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def test_repeated_failed_logins_are_rate_limited(self):
+        payload = json.dumps({'username': 'admin@example.com', 'password': 'incorrect'})
+        for _ in range(8):
+            response = self.client.post(
+                '/api/v1/auth/login/',
+                data=payload,
+                content_type='application/json',
+                REMOTE_ADDR='198.51.100.80',
+            )
+            self.assertEqual(response.status_code, 401)
+
+        response = self.client.post(
+            '/api/v1/auth/login/',
+            data=payload,
+            content_type='application/json',
+            REMOTE_ADDR='198.51.100.80',
+        )
+
+        self.assertEqual(response.status_code, 429)

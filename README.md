@@ -13,7 +13,9 @@ PeopleGraph is a production-focused people lookup portal. The project includes a
 - Database-backed name/address result cache keyed by normalized first name, last name, and exact zip/address input
 - Database-backed TCPA blacklist cache for phone risk status
 - Database-managed authenticated secondary relay for phone and name/state fallback
-- Phone lookup audit trail with timestamp, cache-source flags, and request IP
+- Phone and name lookup audit trails with provider source, response time, result success, cache flags, and request IP
+- Pakistan-only lookup access with cached IPinfo Lite country decisions
+- Staff dashboard relay/upstream diagnostics, primary/secondary response-time averages, and successful-result percentage
 - Loading, empty, error, and results states
 - Dark teal responsive UI using Tailwind CSS and shadcn-style components
 - JavaScript interactions on the landing page, including scroll reveals, counters, and an interactive product preview
@@ -147,7 +149,19 @@ Configure Cloudflare Turnstile:
 TURNSTILE_SECRET_KEY=replace-with-real-cloudflare-secret-key
 TURNSTILE_SITEVERIFY_URL=https://challenges.cloudflare.com/turnstile/v0/siteverify
 TURNSTILE_TIMEOUT_SECONDS=10
+TURNSTILE_EXPECTED_ACTION=peoplegraph_lookup
+TURNSTILE_ALLOWED_HOSTNAMES=peoplegraph.co,www.peoplegraph.co
 ```
+
+Configure the regional lookup gate with a newly generated IPinfo token (never commit it):
+
+```text
+LOOKUP_REGION_ENFORCEMENT_ENABLED=True
+LOOKUP_ALLOWED_COUNTRY_CODE=PK
+IPINFO_API_TOKEN=<new-ipinfo-token>
+```
+
+Country decisions are cached in the database. Allowed IPs default to 30 days and denied IPs to 24 hours. The private administration dashboard probes the relay and its configured phone/name diagnostics whenever the page is loaded.
 
 Use dashboard-generated Cloudflare keys for staging and production testing. The application intentionally ignores Cloudflare test sitekeys in the browser and rejects Cloudflare test secret keys when `DJANGO_DEBUG=False`.
 

@@ -9,6 +9,7 @@ from .views import (
     mark_feedback_read,
     me_view,
     phone_lookup_dashboard,
+    relay_health_dashboard,
     submit_feedback,
 )
 
@@ -20,6 +21,7 @@ urlpatterns = [
     path('logout/', logout_view, name='logout'),
     path('me/', me_view, name='me'),
     path('dashboard/phone-lookups/', phone_lookup_dashboard, name='phone-lookup-dashboard'),
+    path('dashboard/relay-health/', relay_health_dashboard, name='relay-health-dashboard'),
     path('exports/lookup-results/', export_lookup_results, name='export-lookup-results'),
     path('feedback/', submit_feedback, name='submit-feedback'),
     path('feedbacks/', feedback_list, name='feedback-list'),

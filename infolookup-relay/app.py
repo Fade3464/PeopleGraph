@@ -28,6 +28,11 @@ LOOKUP_URL = os.environ.get('INFOLOOKUP_PHONE_LOOKUP_URL', f'{BASE_URL}/api/look
 NAME_LOOKUP_URL = os.environ.get('INFOLOOKUP_NAME_LOOKUP_URL', f'{BASE_URL}/api/name/')
 NAME_LOOKUP_REFERER = os.environ.get('INFOLOOKUP_NAME_LOOKUP_REFERER', f'{BASE_URL}/name-search')
 RELAY_API_TOKEN = os.environ.get('RELAY_API_TOKEN', '')
+DIAGNOSTIC_PHONE_NUMBER = re.sub(r'\D+', '', os.environ.get('DIAGNOSTIC_PHONE_NUMBER', ''))
+DIAGNOSTIC_FIRST_NAME = os.environ.get('DIAGNOSTIC_FIRST_NAME', '').strip()
+DIAGNOSTIC_LAST_NAME = os.environ.get('DIAGNOSTIC_LAST_NAME', '').strip()
+DIAGNOSTIC_STATE = os.environ.get('DIAGNOSTIC_STATE', '').strip().upper()
+DIAGNOSTIC_CACHE_SECONDS = max(10, int(os.environ.get('DIAGNOSTIC_CACHE_SECONDS', '60')))
 UPSTREAM_TIMEOUT_SECONDS = max(3.0, float(os.environ.get('UPSTREAM_TIMEOUT_SECONDS', '15')))
 MAX_CONCURRENT_LOOKUPS = max(1, int(os.environ.get('MAX_CONCURRENT_LOOKUPS', '4')))
 RATE_LIMIT_PER_MINUTE = max(1, int(os.environ.get('RATE_LIMIT_PER_MINUTE', '30')))
@@ -46,6 +51,9 @@ if not RELAY_API_TOKEN or RELAY_API_TOKEN.startswith('replace-with-') or len(REL
 lookup_slots = asyncio.Semaphore(MAX_CONCURRENT_LOOKUPS)
 rate_limit_lock = asyncio.Lock()
 recent_requests: deque[float] = deque()
+diagnostic_lock = asyncio.Lock()
+diagnostic_cached_at = 0.0
+diagnostic_cached_response: dict[str, Any] | None = None
 
 app = FastAPI(
     title='InfoLookup Relay',
@@ -169,6 +177,61 @@ async def enforce_rate_limit() -> None:
 @app.get('/health')
 async def health():
     return {'status': 'ok', 'service': 'infolookup-relay'}
+
+
+@app.post('/v1/diagnostics/upstream', dependencies=[Depends(authenticate)])
+async def upstream_diagnostics():
+    global diagnostic_cached_at, diagnostic_cached_response
+
+    async with diagnostic_lock:
+        now = time.monotonic()
+        if diagnostic_cached_response and now - diagnostic_cached_at < DIAGNOSTIC_CACHE_SECONDS:
+            return {**diagnostic_cached_response, 'cached': True}
+
+        checks = {
+            'phone': await run_phone_diagnostic(),
+            'name': await run_name_diagnostic(),
+        }
+        statuses = {check['status'] for check in checks.values()}
+        overall_status = 'ok' if statuses == {'ok'} else 'degraded'
+        diagnostic_cached_response = {
+            'status': overall_status,
+            'checks': checks,
+            'cached': False,
+        }
+        diagnostic_cached_at = now
+        return diagnostic_cached_response
+
+
+async def run_phone_diagnostic():
+    if len(DIAGNOSTIC_PHONE_NUMBER) != 10:
+        return {'status': 'not_configured'}
+    try:
+        payload = await asyncio.to_thread(fetch_infolookup_phone, DIAGNOSTIC_PHONE_NUMBER)
+        return {'status': 'ok', 'provider_status': str(payload.get('status') or 'unknown')[:32]}
+    except RelayUpstreamError as exc:
+        logger.warning('diagnostic_error lookup=phone code=%s', exc.code)
+        return {'status': 'error', 'code': exc.code}
+
+
+async def run_name_diagnostic():
+    if (
+        not DIAGNOSTIC_FIRST_NAME
+        or not DIAGNOSTIC_LAST_NAME
+        or DIAGNOSTIC_STATE not in US_STATE_CODES
+    ):
+        return {'status': 'not_configured'}
+    try:
+        payload = await asyncio.to_thread(
+            fetch_infolookup_name,
+            DIAGNOSTIC_FIRST_NAME,
+            DIAGNOSTIC_LAST_NAME,
+            DIAGNOSTIC_STATE,
+        )
+        return {'status': 'ok', 'provider_status': str(payload.get('status') or 'unknown')[:32]}
+    except RelayUpstreamError as exc:
+        logger.warning('diagnostic_error lookup=name code=%s', exc.code)
+        return {'status': 'error', 'code': exc.code}
 
 
 @app.post(

@@ -13,6 +13,11 @@ services:
       MAX_CONCURRENT_LOOKUPS: ${MAX_CONCURRENT_LOOKUPS:-4}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
       MAX_UPSTREAM_BYTES: ${MAX_UPSTREAM_BYTES:-2097152}
+      DIAGNOSTIC_PHONE_NUMBER: ${DIAGNOSTIC_PHONE_NUMBER:-}
+      DIAGNOSTIC_FIRST_NAME: ${DIAGNOSTIC_FIRST_NAME:-}
+      DIAGNOSTIC_LAST_NAME: ${DIAGNOSTIC_LAST_NAME:-}
+      DIAGNOSTIC_STATE: ${DIAGNOSTIC_STATE:-}
+      DIAGNOSTIC_CACHE_SECONDS: ${DIAGNOSTIC_CACHE_SECONDS:-60}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     networks:
       - relay_internal
@@ -33,6 +38,8 @@ services:
     environment:
       TUNNEL_ORIGIN_URL: http://relay:8000
       TUNNEL_STATE_FILE: /tunnel-state/current-tunnel.env
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      RELAY_API_TOKEN: ${RELAY_API_TOKEN}
     volumes:
       - ./tunnel-state:/tunnel-state
     ports:

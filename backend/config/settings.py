@@ -78,7 +78,9 @@ if not DEBUG:
         raise ImproperlyConfigured('DJANGO_ALLOWED_HOSTS must be set in production.')
     required_production_env = [
         'CALLLOOM_API_KEY',
+        'IPINFO_API_TOKEN',
         'TCPA_BLACKLIST_API_KEY',
+        'TURNSTILE_ALLOWED_HOSTNAMES',
         'TURNSTILE_SECRET_KEY',
     ]
     missing_env = [name for name in required_production_env if not os.environ.get(name)]
@@ -219,6 +221,29 @@ CORS_ALLOWED_ORIGINS = env_list(
 )
 CORS_ALLOW_CREDENTIALS = False
 
+LOOKUP_ALLOWED_ORIGINS = set(
+    env_list('LOOKUP_ALLOWED_ORIGINS', ','.join(CORS_ALLOWED_ORIGINS))
+)
+LOOKUP_REQUIRE_TRUSTED_ORIGIN = env_bool('LOOKUP_REQUIRE_TRUSTED_ORIGIN', not DEBUG)
+FEEDBACK_REQUIRE_TRUSTED_ORIGIN = env_bool('FEEDBACK_REQUIRE_TRUSTED_ORIGIN', not DEBUG)
+TURNSTILE_EXPECTED_ACTION = os.environ.get('TURNSTILE_EXPECTED_ACTION', 'peoplegraph_lookup').strip()
+TURNSTILE_ALLOWED_HOSTNAMES = set(env_list('TURNSTILE_ALLOWED_HOSTNAMES'))
+
+LOOKUP_REGION_ENFORCEMENT_ENABLED = env_bool('LOOKUP_REGION_ENFORCEMENT_ENABLED', not DEBUG)
+LOOKUP_ALLOW_PRIVATE_IPS_IN_DEBUG = env_bool('LOOKUP_ALLOW_PRIVATE_IPS_IN_DEBUG', True)
+LOOKUP_ALLOWED_COUNTRY_CODE = os.environ.get('LOOKUP_ALLOWED_COUNTRY_CODE', 'PK').strip().upper()
+if len(LOOKUP_ALLOWED_COUNTRY_CODE) != 2:
+    raise ImproperlyConfigured('LOOKUP_ALLOWED_COUNTRY_CODE must be a two-letter country code.')
+LOOKUP_REGION_RESTRICTED_MESSAGE = os.environ.get(
+    'LOOKUP_REGION_RESTRICTED_MESSAGE',
+    'PeopleGraph is currently available only to users in Pakistan. We appreciate your interest and hope to serve your region in the future.',
+)
+IPINFO_API_TOKEN = os.environ.get('IPINFO_API_TOKEN', '').strip()
+IPINFO_LITE_URL = os.environ.get('IPINFO_LITE_URL', 'https://api.ipinfo.io/lite').rstrip('/')
+IPINFO_TIMEOUT_SECONDS = env_int('IPINFO_TIMEOUT_SECONDS', 8, minimum=2, maximum=30)
+IPINFO_ALLOWED_CACHE_DAYS = env_int('IPINFO_ALLOWED_CACHE_DAYS', 30, minimum=1, maximum=365)
+IPINFO_DENIED_CACHE_HOURS = env_int('IPINFO_DENIED_CACHE_HOURS', 24, minimum=1, maximum=168)
+
 CSRF_TRUSTED_ORIGINS = env_list('DJANGO_CSRF_TRUSTED_ORIGINS')
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = int(os.environ.get('DJANGO_DATA_UPLOAD_MAX_MEMORY_SIZE', '1048576'))
@@ -254,7 +279,17 @@ if not DEBUG and not CORS_ALLOWED_ORIGINS:
 if not DEBUG and any(origin.startswith('http://') for origin in CORS_ALLOWED_ORIGINS):
     raise ImproperlyConfigured('Production CORS origins must use HTTPS.')
 
+if not DEBUG and not LOOKUP_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured('LOOKUP_ALLOWED_ORIGINS must be set in production.')
+
 LOOKUP_THROTTLE_RATE = os.environ.get('LOOKUP_THROTTLE_RATE', '30/min')
+ADMIN_LOGIN_FAILURE_LIMIT = env_int('ADMIN_LOGIN_FAILURE_LIMIT', 8, minimum=3, maximum=50)
+ADMIN_LOGIN_FAILURE_WINDOW_SECONDS = env_int(
+    'ADMIN_LOGIN_FAILURE_WINDOW_SECONDS',
+    900,
+    minimum=60,
+    maximum=86400,
+)
 SECONDARY_RELAY_MAX_RESPONSE_BYTES = env_int(
     'SECONDARY_RELAY_MAX_RESPONSE_BYTES',
     2097152,
@@ -272,7 +307,7 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.JSONParser',
     ],
     'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.ScopedRateThrottle',
+        'lookups.throttles.PublicIPScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         'lookup': LOOKUP_THROTTLE_RATE,

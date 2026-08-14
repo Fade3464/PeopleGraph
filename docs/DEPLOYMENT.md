@@ -65,6 +65,9 @@ DJANGO_DEBUG=False
 DJANGO_ALLOWED_HOSTS=peoplegraph.co,www.peoplegraph.co
 DJANGO_CORS_ALLOWED_ORIGINS=https://peoplegraph.co,https://www.peoplegraph.co
 DJANGO_CSRF_TRUSTED_ORIGINS=https://peoplegraph.co,https://www.peoplegraph.co
+LOOKUP_ALLOWED_ORIGINS=https://peoplegraph.co,https://www.peoplegraph.co
+LOOKUP_REQUIRE_TRUSTED_ORIGIN=True
+FEEDBACK_REQUIRE_TRUSTED_ORIGIN=True
 DJANGO_ADMIN_URL_PATH=<private-admin-path>/
 
 POSTGRES_PASSWORD=<strong-db-password>
@@ -72,7 +75,14 @@ POSTGRES_PASSWORD=<strong-db-password>
 CALLLOOM_API_KEY=<real-callloom-key>
 TCPA_BLACKLIST_API_KEY=<real-tcpa-key>
 TURNSTILE_SECRET_KEY=<real-cloudflare-secret-key>
+TURNSTILE_EXPECTED_ACTION=peoplegraph_lookup
+TURNSTILE_ALLOWED_HOSTNAMES=peoplegraph.co,www.peoplegraph.co
+LOOKUP_REGION_ENFORCEMENT_ENABLED=True
+LOOKUP_ALLOWED_COUNTRY_CODE=PK
+IPINFO_API_TOKEN=<new-ipinfo-token>
 ```
+
+Rotate the IPinfo token shown in development chat or shell history and place only the replacement in `.env.production`. The backend caches verified IP decisions in PostgreSQL, so repeated traffic does not call IPinfo on every lookup.
 
 Generate a Django secret:
 
@@ -112,6 +122,8 @@ docker compose --env-file .env.production up -d
 ```
 
 The backend entrypoint waits for PostgreSQL, runs migrations, collects static files, then starts Gunicorn.
+
+Migrations `0009` and `0010` create the IP decision cache and the expanded phone/name audit tables. They run automatically through the existing backend entrypoint during `docker compose up`.
 
 ### Configure the secondary relay
 

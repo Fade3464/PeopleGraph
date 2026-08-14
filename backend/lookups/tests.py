@@ -6,14 +6,23 @@ from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from .admin import SecondaryRelayConfigurationForm
+from .access import RegionRestrictedError, enforce_lookup_region
 from .models import (
     BlacklistLookupCache,
     NameAddrLookupCache,
+    NameLookupAudit,
     PhoneLookupAudit,
     PhoneLookupCache,
+    LookupIPAccessDecision,
     SecondaryRelayConfiguration,
 )
-from .services import UpstreamLookupError, fetch_secondary_name_lookup, fetch_secondary_phone_lookup
+from .services import (
+    TurnstileValidationError,
+    UpstreamLookupError,
+    fetch_secondary_name_lookup,
+    fetch_secondary_phone_lookup,
+    validate_turnstile_token,
+)
 
 
 SAMPLE_RESPONSE = {
@@ -180,6 +189,8 @@ class PhoneLookupTests(APITestCase):
         self.assertNotIn('raw', response.data['data']['persons'][0])
         self.assertEqual(PhoneLookupCache.objects.get().provider, 'secondary')
         self.assertTrue(PhoneLookupCache.objects.get().secondary_attempted)
+        self.assertEqual(set(PhoneLookupAudit.objects.values_list('source', flat=True)), {'secondary'})
+        self.assertEqual(set(PhoneLookupAudit.objects.values_list('successful_result', flat=True)), {True})
         primary_fetch.assert_called_once_with('6175412753')
         secondary_fetch.assert_called_once_with('6175412753')
         blacklist_fetch.assert_called_once_with('6175412753')
@@ -196,7 +207,7 @@ class PhoneLookupTests(APITestCase):
                 {'phone_number': '(617) 541-2753', 'turnstile_token': 'test-token'},
                 format='json',
                 HTTP_HOST='localhost',
-                HTTP_X_FORWARDED_FOR='203.0.113.10, 10.0.0.1',
+                HTTP_X_FORWARDED_FOR='203.0.113.10',
             )
 
         self.assertEqual(response.status_code, 200)
@@ -214,6 +225,9 @@ class PhoneLookupTests(APITestCase):
         self.assertEqual(audit.normalized_phone, '+16175412753')
         self.assertFalse(audit.fetched_from_dbcache)
         self.assertFalse(audit.fetched_from_bla_cache)
+        self.assertEqual(audit.source, 'primary')
+        self.assertIsNotNone(audit.response_time_ms)
+        self.assertTrue(audit.successful_result)
         self.assertEqual(audit.public_ip, '203.0.113.10')
         turnstile.assert_called_once_with('test-token', '203.0.113.10')
         fetch.assert_called_once_with('6175412753')
@@ -261,6 +275,8 @@ class PhoneLookupTests(APITestCase):
         audit = PhoneLookupAudit.objects.first()
         self.assertTrue(audit.fetched_from_dbcache)
         self.assertTrue(audit.fetched_from_bla_cache)
+        self.assertEqual(audit.source, 'primary')
+        self.assertIsNotNone(audit.response_time_ms)
         self.assertEqual(audit.public_ip, '198.51.100.24')
         fetch.assert_not_called()
         blacklist_fetch.assert_not_called()
@@ -362,6 +378,8 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.data['data']['persons'][0], SECONDARY_RESPONSE['data']['persons'][0])
         self.assertEqual(NameAddrLookupCache.objects.get().provider, 'secondary')
         self.assertTrue(NameAddrLookupCache.objects.get().secondary_attempted)
+        self.assertEqual(set(NameLookupAudit.objects.values_list('source', flat=True)), {'secondary'})
+        self.assertEqual(set(NameLookupAudit.objects.values_list('successful_result', flat=True)), {True})
         primary_fetch.assert_called_once_with('John', 'Doe', 'Brooklyn, NY', '')
         secondary_fetch.assert_called_once_with('John', 'Doe', 'NY')
 
@@ -381,6 +399,7 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['provider'], 'primary')
         self.assertEqual(response.data['data']['result_count'], 0)
+        self.assertFalse(NameLookupAudit.objects.get().successful_result)
         secondary_fetch.assert_not_called()
 
     def test_name_lookup_does_not_fall_back_when_address_contains_zip(self):
@@ -423,10 +442,16 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.data['data']['persons'][0]['name'], 'Evencio Pena')
         self.assertNotIn('blacklist', response.data)
         self.assertEqual(NameAddrLookupCache.objects.count(), 1)
+        self.assertEqual(NameLookupAudit.objects.count(), 1)
         cache = NameAddrLookupCache.objects.first()
+        audit = NameLookupAudit.objects.first()
         self.assertEqual(cache.first_name_normalized, 'evencio')
         self.assertEqual(cache.last_name_normalized, 'pena')
         self.assertEqual(cache.location_normalized, 'zip:02118')
+        self.assertEqual(audit.source, 'primary')
+        self.assertFalse(audit.fetched_from_dbcache)
+        self.assertIsNotNone(audit.response_time_ms)
+        self.assertTrue(audit.successful_result)
         turnstile.assert_called_once_with('name-token', '198.51.100.15')
         fetch.assert_called_once_with('Evencio', 'Pena', '', '02118')
 
@@ -458,6 +483,9 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data['source'], 'cache')
         self.assertEqual(response.data['query']['zipcode'], '02118')
+        audit = NameLookupAudit.objects.first()
+        self.assertEqual(audit.source, 'primary')
+        self.assertTrue(audit.fetched_from_dbcache)
         fetch.assert_not_called()
 
     def test_name_address_lookup_sends_address_payload_for_non_zip_location(self):
@@ -686,3 +714,109 @@ class NameAddressValidationTests(APITestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.data['status'], 'error')
+
+
+class LookupAccessSecurityTests(APITestCase):
+    @override_settings(
+        LOOKUP_REGION_ENFORCEMENT_ENABLED=True,
+        IPINFO_API_TOKEN='test-ipinfo-token',
+        LOOKUP_ALLOWED_COUNTRY_CODE='PK',
+    )
+    def test_pakistan_ip_is_stored_and_skips_future_ipinfo_calls(self):
+        upstream = MagicMock()
+        upstream.read.return_value = json.dumps(
+            {'ip': '8.8.8.8', 'country_code': 'PK', 'country': 'Pakistan'}
+        ).encode()
+        upstream.__enter__.return_value = upstream
+
+        with patch('lookups.access.urlopen', return_value=upstream) as ipinfo:
+            first = enforce_lookup_region('8.8.8.8')
+            second = enforce_lookup_region('8.8.8.8')
+
+        self.assertTrue(first.allowed)
+        self.assertTrue(second.allowed)
+        self.assertEqual(LookupIPAccessDecision.objects.get().country_code, 'PK')
+        ipinfo.assert_called_once()
+
+    @override_settings(
+        LOOKUP_REGION_ENFORCEMENT_ENABLED=True,
+        IPINFO_API_TOKEN='test-ipinfo-token',
+        LOOKUP_ALLOWED_COUNTRY_CODE='PK',
+    )
+    def test_denied_country_is_cached_to_protect_ipinfo_quota(self):
+        upstream = MagicMock()
+        upstream.read.return_value = json.dumps(
+            {'ip': '1.1.1.1', 'country_code': 'AU', 'country': 'Australia'}
+        ).encode()
+        upstream.__enter__.return_value = upstream
+
+        with patch('lookups.access.urlopen', return_value=upstream) as ipinfo:
+            with self.assertRaises(RegionRestrictedError):
+                enforce_lookup_region('1.1.1.1')
+            with self.assertRaises(RegionRestrictedError):
+                enforce_lookup_region('1.1.1.1')
+
+        self.assertFalse(LookupIPAccessDecision.objects.get().allowed)
+        ipinfo.assert_called_once()
+
+    @override_settings(
+        LOOKUP_REQUIRE_TRUSTED_ORIGIN=True,
+        LOOKUP_ALLOWED_ORIGINS={'https://peoplegraph.co'},
+    )
+    def test_lookup_rejects_missing_or_cross_site_origin_before_upstreams(self):
+        with patch('lookups.views.validate_turnstile_token') as turnstile:
+            missing = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '2025550123', 'turnstile_token': 'token'},
+                format='json',
+            )
+            cross_site = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '2025550123', 'turnstile_token': 'token'},
+                format='json',
+                HTTP_ORIGIN='https://peoplegraph.co',
+                HTTP_SEC_FETCH_SITE='cross-site',
+            )
+
+        self.assertEqual(missing.status_code, 403)
+        self.assertEqual(cross_site.status_code, 403)
+        turnstile.assert_not_called()
+
+    @override_settings(
+        LOOKUP_REQUIRE_TRUSTED_ORIGIN=True,
+        LOOKUP_ALLOWED_ORIGINS={'https://peoplegraph.co'},
+        LOOKUP_REGION_ENFORCEMENT_ENABLED=True,
+    )
+    def test_region_restriction_returns_modal_response_code(self):
+        with (
+            patch('lookups.views.enforce_lookup_region', side_effect=RegionRestrictedError('Not available.')),
+            patch('lookups.views.validate_turnstile_token') as turnstile,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '2025550123', 'turnstile_token': 'token'},
+                format='json',
+                HTTP_ORIGIN='https://peoplegraph.co',
+                HTTP_SEC_FETCH_SITE='same-origin',
+                REMOTE_ADDR='1.1.1.1',
+            )
+
+        self.assertEqual(response.status_code, 451)
+        self.assertEqual(response.data['code'], 'region_restricted')
+        turnstile.assert_not_called()
+
+    @override_settings(
+        TURNSTILE_SECRET_KEY='secret',
+        TURNSTILE_EXPECTED_ACTION='peoplegraph_lookup',
+        TURNSTILE_ALLOWED_HOSTNAMES={'peoplegraph.co'},
+    )
+    def test_turnstile_requires_expected_action_and_hostname(self):
+        upstream = MagicMock()
+        upstream.read.return_value = json.dumps(
+            {'success': True, 'action': 'wrong_action', 'hostname': 'peoplegraph.co'}
+        ).encode()
+        upstream.__enter__.return_value = upstream
+
+        with patch('lookups.services.urlopen', return_value=upstream):
+            with self.assertRaises(TurnstileValidationError):
+                validate_turnstile_token('valid-looking-token', '8.8.8.8')

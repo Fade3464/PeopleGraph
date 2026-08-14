@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowUpRight,
@@ -74,8 +75,30 @@ type DashboardPayload = {
     bucket_minutes: number;
   };
   summary: DashboardSummary;
+  performance: {
+    primary: LookupPerformance;
+    secondary: LookupPerformance;
+  };
+  success_rate: {
+    percentage: number | null;
+    successful: number;
+    total: number;
+  };
   lookup_counts: LookupCountPoint[];
   public_ip_counts: PublicIpCount[];
+};
+
+type LookupPerformance = {
+  average_response_time_ms: number | null;
+  samples: number;
+};
+
+type RelayHealthPayload = {
+  status: "ok" | "degraded" | "offline" | "not_configured";
+  relay: "online" | "offline" | "not_configured";
+  phone_api: "ok" | "error" | "not_configured" | "unknown";
+  name_api: "ok" | "error" | "not_configured" | "unknown";
+  hostname?: string;
 };
 
 type FeedbackRecord = {
@@ -121,6 +144,7 @@ const navItems = [
 ] satisfies Array<{ id: AdminTab; label: string; icon: LucideIcon }>;
 
 export default function AdministrationWorkspace() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<AdminTab>("dashboard");
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -131,6 +155,21 @@ export default function AdministrationWorkspace() {
     () => navItems.find((item) => item.id === activeTab) ?? navItems[0],
     [activeTab],
   );
+
+  const refreshUnreadFeedbackCount = useCallback(async () => {
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/feedbacks/`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as FeedbackListPayload | null;
+      if (response.ok && payload?.status === "success") {
+        setUnreadFeedbackCount(payload.unread_count);
+      }
+    } catch {
+      setUnreadFeedbackCount(0);
+    }
+  }, []);
 
   useEffect(() => {
     async function checkSession() {
@@ -145,7 +184,7 @@ export default function AdministrationWorkspace() {
 
         if (!response.ok || !payload?.authenticated || !payload.user?.is_staff) {
           setAuthState("unauthenticated");
-          window.location.replace("/admininstration/login");
+          router.replace("/admininstration/login");
           return;
         }
 
@@ -154,12 +193,12 @@ export default function AdministrationWorkspace() {
         void refreshUnreadFeedbackCount();
       } catch {
         setAuthState("unauthenticated");
-        window.location.replace("/admininstration/login");
+        router.replace("/admininstration/login");
       }
     }
 
     void checkSession();
-  }, []);
+  }, [refreshUnreadFeedbackCount, router]);
 
   async function handleLogout() {
     try {
@@ -172,28 +211,13 @@ export default function AdministrationWorkspace() {
         },
       });
     } finally {
-      window.location.assign("/admininstration/login");
+      router.push("/admininstration/login");
     }
   }
 
   function selectTab(tab: AdminTab) {
     setActiveTab(tab);
     setIsSidebarOpen(false);
-  }
-
-  async function refreshUnreadFeedbackCount() {
-    try {
-      const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/feedbacks/`, {
-        credentials: "include",
-        cache: "no-store",
-      });
-      const payload = (await response.json().catch(() => null)) as FeedbackListPayload | null;
-      if (response.ok && payload?.status === "success") {
-        setUnreadFeedbackCount(payload.unread_count);
-      }
-    } catch {
-      setUnreadFeedbackCount(0);
-    }
   }
 
   if (authState === "checking") {
@@ -470,11 +494,32 @@ function DashboardPanel() {
   const [data, setData] = useState<DashboardPayload | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState("");
+  const [relayHealth, setRelayHealth] = useState<RelayHealthPayload | null>(null);
+  const [relayHealthError, setRelayHealthError] = useState("");
 
   useEffect(() => {
     void loadDashboard();
+    void loadRelayHealth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function loadRelayHealth() {
+    setRelayHealthError("");
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/dashboard/relay-health/`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const payload = (await response.json().catch(() => null)) as RelayHealthPayload | null;
+      if (!response.ok || !payload?.status) {
+        setRelayHealthError("Relay health check failed.");
+        return;
+      }
+      setRelayHealth(payload);
+    } catch {
+      setRelayHealthError("Relay health check is unavailable.");
+    }
+  }
 
   async function loadDashboard(nextFrom = from, nextTo = to) {
     setState("loading");
@@ -534,10 +579,51 @@ function DashboardPanel() {
 
   return (
     <section className="space-y-5">
+      <section className="rounded-2xl border border-white/10 bg-[#101827]/90 p-4 shadow-panel sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-primary">Relay monitoring</p>
+            <h3 className="mt-1 text-lg font-extrabold text-white">Pakistani relay and upstream APIs</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Checked automatically when this administration page loads.
+              {relayHealth?.hostname ? ` Current host: ${relayHealth.hostname}` : ""}
+            </p>
+          </div>
+          <Button type="button" variant="secondary" size="sm" onClick={() => void loadRelayHealth()}>
+            <Activity />
+            Check now
+          </Button>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <StatusBadge icon={Activity} label="Relay" value={relayHealth?.relay ?? "Checking"} />
+          <StatusBadge icon={Search} label="Phone API" value={relayHealth?.phone_api ?? "Checking"} />
+          <StatusBadge icon={Database} label="Name API" value={relayHealth?.name_api ?? "Checking"} />
+        </div>
+        {relayHealthError ? <p className="mt-3 text-sm text-rose-200">{relayHealthError}</p> : null}
+      </section>
+
       <div className="grid gap-4 md:grid-cols-3">
         <AdminMetric icon={Search} label="Phone Lookups" value={formatNumber(summary.total_lookups)} />
         <AdminMetric icon={Database} label="Unique Numbers" value={formatNumber(summary.unique_phone_numbers)} />
         <AdminMetric icon={BarChart3} label="Public IPs" value={formatNumber(summary.unique_public_ips)} />
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <AdminMetric
+          icon={Activity}
+          label="Primary avg response"
+          value={formatResponseTime(data?.performance.primary.average_response_time_ms)}
+        />
+        <AdminMetric
+          icon={Activity}
+          label="Secondary avg response"
+          value={formatResponseTime(data?.performance.secondary.average_response_time_ms)}
+        />
+        <AdminMetric
+          icon={CheckCircle2}
+          label="Successful results"
+          value={formatSuccessRate(data?.success_rate.percentage)}
+        />
       </div>
 
       <section className="rounded-2xl border border-white/10 bg-[#101827]/90 p-4 shadow-panel sm:p-5">
@@ -712,6 +798,8 @@ function ExportLogsPanel() {
     }
 
     const params = new URLSearchParams({ from, to });
+    // This navigation intentionally downloads a CSV response instead of rendering a Next.js route.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign(`${getApiBaseUrl()}/api/v1/auth/exports/lookup-results/?${params}`);
   }
 
@@ -1135,6 +1223,17 @@ function formatDateTimeLocalInNewYork(date: Date) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatResponseTime(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "No data";
+  }
+  return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value.toFixed(1)} ms`;
+}
+
+function formatSuccessRate(value: number | null | undefined) {
+  return value === null || value === undefined ? "No data" : `${value.toFixed(1)}%`;
 }
 
 function formatDateTime(value: string) {

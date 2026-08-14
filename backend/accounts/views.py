@@ -1,14 +1,14 @@
 import json
 import csv
+import hashlib
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone as datetime_timezone
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from django.contrib.auth import authenticate, login, logout
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Count
+from django.db.models import Count, Sum
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
@@ -20,7 +20,9 @@ from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_POST
 
 from .models import Feedback
-from lookups.models import PhoneLookupAudit, PhoneLookupCache
+from lookups.models import NameLookupAudit, PhoneLookupAudit, PhoneLookupCache
+from lookups.network import get_client_ip
+from lookups.services import probe_secondary_relay
 
 
 NEW_YORK_TIMEZONE = ZoneInfo('America/New_York')
@@ -76,16 +78,27 @@ def login_view(request):
     if not username or not password:
         return JsonResponse({'status': 'error', 'message': 'Enter username and password.'}, status=400)
 
+    login_rate_key = get_login_rate_key(request, username)
+    if int(cache.get(login_rate_key, 0)) >= settings.ADMIN_LOGIN_FAILURE_LIMIT:
+        return JsonResponse(
+            {'status': 'error', 'message': 'Too many sign-in attempts. Please try again later.'},
+            status=429,
+        )
+
     user = authenticate(request, username=username, password=password)
     if user is None:
+        record_login_failure(login_rate_key)
         return JsonResponse({'status': 'error', 'message': 'Invalid username or password.'}, status=401)
 
     if not user.is_active:
+        record_login_failure(login_rate_key)
         return JsonResponse({'status': 'error', 'message': 'This account is inactive.'}, status=403)
 
     if not user.is_staff:
+        record_login_failure(login_rate_key)
         return JsonResponse({'status': 'error', 'message': 'This account cannot access administration.'}, status=403)
 
+    cache.delete(login_rate_key)
     login(request, user)
     return JsonResponse(
         {
@@ -156,6 +169,8 @@ def phone_lookup_dashboard(request):
                 'unique_phone_numbers': audits.values('normalized_phone').distinct().count(),
                 'unique_public_ips': audits.exclude(public_ip__isnull=True).values('public_ip').distinct().count(),
             },
+            'performance': build_lookup_performance(from_utc, to_utc),
+            'success_rate': build_lookup_success_rate(from_utc, to_utc),
             'lookup_counts': buckets,
             'public_ip_counts': [
                 {
@@ -167,6 +182,53 @@ def phone_lookup_dashboard(request):
             ],
         }
     )
+
+
+def build_lookup_performance(from_utc, to_utc):
+    performance = {}
+    for source in ('primary', 'secondary'):
+        totals = {'total_ms': 0, 'samples': 0}
+        for audit_model in (PhoneLookupAudit, NameLookupAudit):
+            aggregate = audit_model.objects.filter(
+                timestamp__gte=from_utc,
+                timestamp__lte=to_utc,
+                source=source,
+                response_time_ms__isnull=False,
+            ).aggregate(total_ms=Sum('response_time_ms'), samples=Count('id'))
+            totals['total_ms'] += aggregate['total_ms'] or 0
+            totals['samples'] += aggregate['samples'] or 0
+
+        performance[source] = {
+            'average_response_time_ms': (
+                round(totals['total_ms'] / totals['samples'], 1) if totals['samples'] else None
+            ),
+            'samples': totals['samples'],
+        }
+    return performance
+
+
+def build_lookup_success_rate(from_utc, to_utc):
+    total = 0
+    successful = 0
+    for audit_model in (PhoneLookupAudit, NameLookupAudit):
+        audits = audit_model.objects.filter(timestamp__gte=from_utc, timestamp__lte=to_utc)
+        total += audits.count()
+        successful += audits.filter(successful_result=True).count()
+
+    return {
+        'percentage': round((successful / total) * 100, 1) if total else None,
+        'successful': successful,
+        'total': total,
+    }
+
+
+@require_GET
+@never_cache
+def relay_health_dashboard(request):
+    if not request.user.is_authenticated or not request.user.is_staff:
+        return JsonResponse({'status': 'error', 'message': 'Administration access required.'}, status=403)
+
+    return JsonResponse(probe_secondary_relay())
 
 
 @require_GET
@@ -478,7 +540,7 @@ def create_feedback_from_payload(payload, request):
         details=details,
         suggestion=suggestion,
         page_url=page_url,
-        public_ip=get_public_ip(request),
+        public_ip=get_client_ip(request),
         user_agent=clean_text(request.META.get('HTTP_USER_AGENT'), 255),
     )
 
@@ -511,8 +573,23 @@ def clean_text(value, max_length, preserve_newlines=False):
     return text
 
 
+def get_login_rate_key(request, username):
+    ip_address = get_client_ip(request) or 'unknown'
+    username_digest = hashlib.sha256(username.lower().encode('utf-8')).hexdigest()[:24]
+    return f'admin-login-failures:{ip_address}:{username_digest}'
+
+
+def record_login_failure(cache_key):
+    if cache.add(cache_key, 1, settings.ADMIN_LOGIN_FAILURE_WINDOW_SECONDS):
+        return
+    try:
+        cache.incr(cache_key)
+    except ValueError:
+        cache.set(cache_key, 1, settings.ADMIN_LOGIN_FAILURE_WINDOW_SECONDS)
+
+
 def enforce_feedback_rate_limit(request):
-    public_ip = get_public_ip(request) or 'unknown'
+    public_ip = get_client_ip(request) or 'unknown'
     cache_key = f'feedback-rate:{public_ip}'
 
     if cache.add(cache_key, 1, FEEDBACK_RATE_LIMIT_SECONDS):
@@ -531,20 +608,7 @@ def enforce_feedback_rate_limit(request):
 def request_origin_is_allowed(request):
     origin = request.META.get('HTTP_ORIGIN')
     if not origin:
-        return True
+        return not settings.FEEDBACK_REQUIRE_TRUSTED_ORIGIN
 
     allowed_origins = set(settings.CSRF_TRUSTED_ORIGINS) | set(settings.CORS_ALLOWED_ORIGINS)
-    if origin in allowed_origins:
-        return True
-
-    parsed = urlparse(origin)
-    return parsed.hostname in settings.ALLOWED_HOSTS
-
-
-def get_public_ip(request):
-    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
-    if forwarded_for:
-        return forwarded_for.split(',')[0].strip() or None
-
-    real_ip = request.META.get('HTTP_X_REAL_IP', '')
-    return real_ip.strip() or request.META.get('REMOTE_ADDR')
+    return origin.rstrip('/') in {item.rstrip('/') for item in allowed_origins}

@@ -9,7 +9,6 @@ import {
   CircleUserRound,
   Fingerprint,
   Gauge,
-  LockKeyhole,
   MapPin,
   Phone,
   Search,
@@ -346,6 +345,8 @@ function AnimatedNumber({ value }: { value: number }) {
     }, 18);
 
     return () => window.clearInterval(timer);
+    // `display` is intentionally captured as the animation's starting value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   return <span>{display}</span>;

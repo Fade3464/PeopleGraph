@@ -1,15 +1,5 @@
 "use client";
 
-import Link from "next/link";
-import {
-  type CSSProperties,
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
 import {
   BadgeCheck,
   Building2,
@@ -37,6 +27,16 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import Link from "next/link";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,6 +51,7 @@ declare global {
           sitekey: string;
           theme?: "light" | "dark" | "auto";
           size?: "normal" | "compact" | "flexible";
+          action?: string;
           callback?: (token: string) => void;
           "error-callback"?: () => void;
           "expired-callback"?: () => void;
@@ -190,6 +191,7 @@ type PersonResult = {
 
 type LookupResponse = {
   status: string;
+  code?: string;
   message?: string;
   source?: "cache" | "upstream";
   provider?: "primary" | "secondary";
@@ -254,6 +256,7 @@ export default function HomePage() {
   const resetTurnstileRef = useRef<() => void>(() => {});
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileError, setTurnstileError] = useState("");
+  const [regionRestrictionMessage, setRegionRestrictionMessage] = useState("");
 
   const [lookupByMode, setLookupByMode] = useState<Record<SearchMode, ModeLookupState>>(() => ({
     phone: createEmptyLookupState(),
@@ -399,21 +402,24 @@ export default function HomePage() {
               turnstile_token: turnstileToken,
             };
 
-      const [response] = await Promise.all([
-        fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }),
-        sleep(1500),
-      ]);
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
 
       const payload = (await response.json().catch(() => null)) as LookupResponse | null;
 
       if (!response.ok) {
         resetTurnstile();
+        if (payload?.code === "region_restricted") {
+          setRegionRestrictionMessage(
+            payload.message ||
+              "PeopleGraph is currently available only to users in Pakistan. We appreciate your interest and hope to serve your region in the future.",
+          );
+        }
         updateModeLookup(searchMode, (current) => ({
           ...current,
           state: "error",
@@ -466,7 +472,11 @@ export default function HomePage() {
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_top_left,_rgba(45,212,191,0.16),_transparent_32rem),radial-gradient(circle_at_top_right,_rgba(34,211,238,0.12),_transparent_30rem)]" />
 
       <TopNav />
-      <TimedToast toast={toast} onClose={closeToast} />
+      <TimedToast key={toast?.id ?? "no-toast"} toast={toast} onClose={closeToast} />
+      <RegionRestrictionModal
+        message={regionRestrictionMessage}
+        onClose={() => setRegionRestrictionMessage("")}
+      />
       <LookupLoader isVisible={activeLookup.state === "loading"} />
       <Link
         href="/feedback"
@@ -517,7 +527,6 @@ export default function HomePage() {
             validationMessage={activeLookup.validationMessage}
             lookupFeedback={activeLookup.lookupFeedback}
             turnstileSiteKey={turnstileSiteKey}
-            turnstileToken={turnstileToken}
             turnstileError={turnstileError}
             onTurnstileVerify={handleTurnstileVerify}
             onTurnstileExpire={handleTurnstileExpire}
@@ -548,6 +557,42 @@ export default function HomePage() {
         </section>
       </div>
     </main>
+  );
+}
+
+function RegionRestrictionModal({ message, onClose }: { message: string; onClose: () => void }) {
+  if (!message) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] grid place-items-center bg-black/75 px-4 backdrop-blur-sm"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="region-restriction-title"
+        className="w-full max-w-md rounded-2xl border border-amber-300/25 bg-[#101827] p-6 shadow-panel"
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid size-11 shrink-0 place-items-center rounded-full bg-amber-300/10 text-amber-200">
+            <MapPinned className="size-5" />
+          </span>
+          <div>
+            <h2 id="region-restriction-title" className="text-xl font-extrabold text-white">
+              Service unavailable in your region
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">{message}</p>
+          </div>
+        </div>
+        <Button type="button" className="mt-6 w-full" onClick={onClose} autoFocus>
+          Understood
+        </Button>
+      </section>
+    </div>
   );
 }
 
@@ -630,10 +675,6 @@ function getRealTurnstileSiteKey() {
   }
 
   return siteKey;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function validateSearch(
@@ -732,8 +773,6 @@ function TimedToast({ toast, onClose }: { toast: ToastState | null; onClose: () 
 
   useEffect(() => {
     if (!toast) return;
-
-    setIsLeaving(false);
 
     const fadeTimer = setTimeout(() => {
       setIsLeaving(true);
@@ -993,7 +1032,6 @@ type SearchPanelProps = {
   validationMessage: string;
   lookupFeedback: string;
   turnstileSiteKey: string;
-  turnstileToken: string;
   turnstileError: string;
   onTurnstileVerify: (token: string) => void;
   onTurnstileExpire: () => void;
@@ -1017,7 +1055,6 @@ function SearchPanel(props: SearchPanelProps) {
     validationMessage,
     lookupFeedback,
     turnstileSiteKey,
-    turnstileToken,
     turnstileError,
     onTurnstileVerify,
     onTurnstileExpire,
@@ -1220,7 +1257,7 @@ function SearchPanel(props: SearchPanelProps) {
                   role="tooltip"
                   className="pointer-events-none absolute left-0 top-[calc(100%+0.75rem)] z-30 max-w-sm rounded-xl border border-white/10 bg-[#101827]/95 px-3 py-2 text-xs leading-5 text-muted-foreground opacity-0 shadow-panel backdrop-blur-xl transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
                 >
-                  A state by itself (for example, NY or WA) is accepted. Include a state for more precise results and secondary coverage. Locations containing a ZIP use the primary source only.
+                  ⓘEnter the state alone for comprehensive results.
                 </div>
               </div>
             </label>
@@ -1242,7 +1279,6 @@ function SearchPanel(props: SearchPanelProps) {
 
       <TurnstileBox
         siteKey={turnstileSiteKey}
-        token={turnstileToken}
         errorMessage={turnstileError}
         onVerify={onTurnstileVerify}
         onExpire={onTurnstileExpire}
@@ -1278,7 +1314,6 @@ function SearchPanel(props: SearchPanelProps) {
 
 function TurnstileBox({
   siteKey,
-  token,
   errorMessage,
   onVerify,
   onExpire,
@@ -1286,7 +1321,6 @@ function TurnstileBox({
   registerReset,
 }: {
   siteKey: string;
-  token: string;
   errorMessage: string;
   onVerify: (token: string) => void;
   onExpire: () => void;
@@ -1346,6 +1380,7 @@ function TurnstileBox({
       sitekey: siteKey,
       theme: "dark",
       size: "flexible",
+      action: "peoplegraph_lookup",
       callback: onVerify,
       "expired-callback": onExpire,
       "timeout-callback": onExpire,
@@ -1544,19 +1579,19 @@ function BlacklistPanel({ blacklist }: { blacklist: BlacklistResult | null }) {
   const [shouldShake, setShouldShake] = useState(false);
 
   useEffect(() => {
-    if (!blacklist?.is_bad_number) {
-      setShouldShake(false);
-      return;
-    }
+    if (!blacklist?.is_bad_number) return;
+
+    let startTimer: number | undefined;
+    let endTimer: number | undefined;
 
     function triggerShake() {
       setShouldShake(false);
 
-      window.setTimeout(() => {
+      startTimer = window.setTimeout(() => {
         setShouldShake(true);
       }, 20);
 
-      window.setTimeout(() => {
+      endTimer = window.setTimeout(() => {
         setShouldShake(false);
       }, 780);
     }
@@ -1565,7 +1600,11 @@ function BlacklistPanel({ blacklist }: { blacklist: BlacklistResult | null }) {
 
     const interval = window.setInterval(triggerShake, 5000);
 
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      if (startTimer) window.clearTimeout(startTimer);
+      if (endTimer) window.clearTimeout(endTimer);
+    };
   }, [blacklist?.is_bad_number, blacklist?.normalized_phone, blacklist?.tcpa_status]);
 
   if (!blacklist) return null;
@@ -1583,7 +1622,7 @@ function BlacklistPanel({ blacklist }: { blacklist: BlacklistResult | null }) {
         cardTone === "danger" && "border-rose-400/30 bg-rose-400/10",
         cardTone === "warning" && "border-amber-300/25 bg-amber-300/10",
         cardTone === "safe" && "border-emerald-300/20 bg-emerald-300/8",
-        shouldShake && "risk-attention-shake",
+        blacklist.is_bad_number && shouldShake && "risk-attention-shake",
       )}
     >
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">

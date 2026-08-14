@@ -20,5 +20,6 @@ frontend/.env.*
 !frontend/.env.example
 frontend/.next/
 frontend/node_modules/
+*.tsbuildinfo
 
 *.log
