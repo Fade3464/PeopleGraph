@@ -1233,7 +1233,7 @@ function SearchPanel(props: SearchPanelProps) {
             </label>
 
             <label className="block">
-              <span className="mb-2 block text-sm font-semibold">Address or Zip Code</span>
+              <span className="mb-2 block text-sm font-semibold">State or Zip Code</span>
 
               <div className="group relative">
                 <MapPin className="absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -1246,7 +1246,7 @@ function SearchPanel(props: SearchPanelProps) {
   "pl-11",
   feedbackMessage && isErrorFeedback && "border-rose-400/70",
 )}
-                  placeholder="City, state, street, or zip code"
+                  placeholder="State or zip code"
                   autoComplete="street-address"
                   aria-invalid={Boolean(feedbackMessage && isErrorFeedback)}
                   aria-describedby="location-lookup-tooltip"
@@ -1257,7 +1257,7 @@ function SearchPanel(props: SearchPanelProps) {
                   role="tooltip"
                   className="pointer-events-none absolute left-0 top-[calc(100%+0.75rem)] z-30 max-w-sm rounded-xl border border-white/10 bg-[#101827]/95 px-3 py-2 text-xs leading-5 text-muted-foreground opacity-0 shadow-panel backdrop-blur-xl transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
                 >
-                  ⓘEnter the state alone for comprehensive results.
+                  ⓘZipcode returning no results? Try with the State name.
                 </div>
               </div>
             </label>
