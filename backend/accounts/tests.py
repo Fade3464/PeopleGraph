@@ -279,7 +279,7 @@ class DashboardSecurityTests(TestCase):
                 'relay': 'online',
                 'phone_api': 'ok',
                 'name_api': 'ok',
-                'hostname': 'relay.trycloudflare.com',
+                'hostname': 'relay.peoplegraph.co',
             },
         ) as probe:
             response = client.get('/api/v1/auth/dashboard/relay-health/')

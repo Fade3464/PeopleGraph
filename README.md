@@ -50,7 +50,7 @@ PeopleGraph/
       globals.css       # Global theme and utilities
     components/ui/      # Local UI primitives
     lib/                # Shared frontend utilities
-  infolookup-relay/     # Standalone Pakistani egress relay and automatic tunnel
+  infolookup-relay/     # Standalone Pakistani egress relay behind a named Cloudflare Tunnel
 ```
 
 ## Frontend Setup
@@ -132,16 +132,17 @@ CALLLOOM_NAME_ADDR_LOOKUP_URL=https://api.callloom.com/api/people-lookup/get-pho
 CALLLOOM_TIMEOUT_SECONDS=20
 ```
 
-The secondary relay endpoints and bearer token are stored in the database rather than the environment. After migrations, open the private Django admin and create the single **Secondary relay configuration** using the Pakistani server's latest `infolookup-relay/tunnel-state/current-tunnel.env` values:
+Production uses a stable named Cloudflare Tunnel at `https://relay.peoplegraph.co`. The backend image can bootstrap the singleton **Secondary relay configuration** from `.env.production` on every start, so recreating the backend container does not require re-entering the endpoint or bearer token in Django admin:
 
 ```text
-Phone endpoint: https://<current-tunnel>/v1/lookups/phone
-Name endpoint:  https://<current-tunnel>/v1/lookups/name
-API token:      the Pakistani relay RELAY_API_TOKEN
-Enabled:        yes
+ENSURE_SECONDARY_RELAY_CONFIG=True
+SECONDARY_RELAY_BASE_URL=https://relay.peoplegraph.co
+SECONDARY_RELAY_API_TOKEN=<same RELAY_API_TOKEN used by the Pakistani relay>
+SECONDARY_RELAY_ENABLED=True
+SECONDARY_RELAY_TIMEOUT_SECONDS=20
 ```
 
-The token is not rendered back into the admin form. Leave it blank while editing to retain the current token. Quick Tunnel hostnames can change after a relay restart, so update both endpoint fields from the latest state file when that happens.
+The secret remains runtime configuration; it is not baked into the Docker image. When bootstrap is enabled, these environment values are authoritative and any manual Django-admin edits to the relay row are replaced on the next backend start. The database row remains available to the existing lookup and dashboard code.
 
 Configure Cloudflare Turnstile:
 

@@ -121,21 +121,25 @@ The frontend public env variables are compiled into the Next.js build. If `NEXT_
 docker compose --env-file .env.production up -d
 ```
 
-The backend entrypoint waits for PostgreSQL, runs migrations, collects static files, then starts Gunicorn.
+The backend entrypoint waits for PostgreSQL, runs migrations, bootstraps the configured Django admin and secondary relay configuration, collects static files, then starts Gunicorn.
 
 Migrations `0009` and `0010` create the IP decision cache and the expanded phone/name audit tables. They run automatically through the existing backend entrypoint during `docker compose up`.
 
 ### Configure the secondary relay
 
-After the first successful start, open the private Django admin URL and create the single **Secondary relay configuration**. Copy the current values from `tunnel-state/current-tunnel.env` on the Pakistani relay server:
+The production relay has a stable Cloudflare hostname. Put the relay settings in `.env.production`:
 
 ```text
-PHONE_RELAY_ENDPOINT -> Phone endpoint
-NAME_RELAY_ENDPOINT  -> Name endpoint
-RELAY_API_TOKEN      -> API token
+ENSURE_SECONDARY_RELAY_CONFIG=True
+SECONDARY_RELAY_BASE_URL=https://relay.peoplegraph.co
+SECONDARY_RELAY_API_TOKEN=<same high-entropy token configured as RELAY_API_TOKEN on the relay server>
+SECONDARY_RELAY_ENABLED=True
+SECONDARY_RELAY_TIMEOUT_SECONDS=20
 ```
 
-Keep **Enabled** selected. The backend reads this row only when the primary provider has no results. Name fallback runs only when the submitted location contains a valid US state and no ZIP code. If Cloudflared assigns a new Quick Tunnel hostname, update both endpoint fields in Django admin; no image rebuild or environment-file change is required.
+On every backend start, `ensure_secondary_relay` creates or updates the single database row used by the lookup code. This means backend container recreation does not require re-entering relay authentication in Django admin. The token is supplied at runtime from `.env.production`; do not add it to the Dockerfile or commit it.
+
+The backend reads this row only when the primary provider has no results. Name fallback runs only when the submitted location contains a valid US state and no ZIP code. With bootstrap enabled, `.env.production` is authoritative; manual changes to the relay row in Django admin are overwritten on the next backend start.
 
 Check status:
 

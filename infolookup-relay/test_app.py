@@ -10,7 +10,6 @@ import pytest
 
 os.environ.setdefault('RELAY_API_TOKEN', 'test-token-with-at-least-thirty-two-characters')
 relay = importlib.import_module('app')
-tunnel_manager = importlib.import_module('tunnel_manager')
 
 
 class ASGITestClient:
@@ -245,42 +244,3 @@ def test_name_upstream_request_uses_only_first_last_and_state():
     assert result == {'status': 'ok', 'count': 0, 'results': []}
 
 
-def test_tunnel_manager_extracts_and_saves_current_endpoints(tmp_path):
-    tunnel_url = tunnel_manager.extract_tunnel_url(
-        'INF Requesting new quick Tunnel on https://Example-Relay.trycloudflare.com'
-    )
-    state_file = tmp_path / 'current-tunnel.env'
-
-    with patch.object(tunnel_manager, 'STATE_FILE', state_file):
-        tunnel_manager.write_state('ready', tunnel_url)
-
-    assert tunnel_url == 'https://example-relay.trycloudflare.com'
-    assert state_file.read_text(encoding='utf-8').splitlines()[0] == 'TUNNEL_STATUS=ready'
-    contents = state_file.read_text(encoding='utf-8')
-    assert 'PHONE_RELAY_ENDPOINT=https://example-relay.trycloudflare.com/v1/lookups/phone' in contents
-    assert 'NAME_RELAY_ENDPOINT=https://example-relay.trycloudflare.com/v1/lookups/name' in contents
-
-
-def test_discord_notification_sends_endpoints_and_token_in_message_body():
-    response = MagicMock()
-    response.read.return_value = b''
-    response.__enter__.return_value = response
-    with (
-        patch.object(
-            tunnel_manager,
-            'DISCORD_WEBHOOK_URL',
-            'https://discord.com/api/webhooks/123/secret',
-        ),
-        patch.object(tunnel_manager, 'RELAY_API_TOKEN', 'relay-secret-token'),
-        patch.object(tunnel_manager, 'urlopen', return_value=response) as send,
-    ):
-        sent = tunnel_manager.notify_discord('https://example-relay.trycloudflare.com')
-
-    assert sent is True
-    request = send.call_args.args[0]
-    payload = json.loads(request.data)
-    message = payload['content']
-    assert 'https://example-relay.trycloudflare.com/v1/lookups/phone' in message
-    assert 'https://example-relay.trycloudflare.com/v1/lookups/name' in message
-    assert 'relay-secret-token' in message
-    assert payload['allowed_mentions'] == {'parse': []}

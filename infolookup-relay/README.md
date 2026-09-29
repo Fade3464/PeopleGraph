@@ -1,8 +1,8 @@
 # InfoLookup Relay
 
-A narrow authenticated FastAPI relay intended to run on the Pakistani origin. It performs InfoLookup phone and name/state requests from that server's public IP, then returns only compact person fields.
+A narrow authenticated FastAPI relay running on the Pakistani origin. It performs InfoLookup phone and name/state requests from that server's public IP and returns only compact person fields.
 
-It is not a general HTTP proxy and does not accept caller-controlled URLs or headers.
+The relay is exposed through the named Cloudflare Tunnel hostname `https://relay.peoplegraph.co`. It is not a general HTTP proxy and does not accept caller-controlled URLs or headers.
 
 ## Public contract
 
@@ -18,81 +18,72 @@ It is not a general HTTP proxy and does not accept caller-controlled URLs or hea
 {"first_name":"Jane","last_name":"Doe","state":"NY"}
 ```
 
-The name route accepts a two-letter US state code only. It deliberately rejects ZIP codes and all extra fields. PeopleGraph should call this route only when its address input is a state; a name-plus-ZIP lookup must stop after the primary provider.
-
-Required application header for both routes:
+Both lookup routes require:
 
 ```text
 Authorization: Bearer <RELAY_API_TOKEN>
 ```
 
-`GET /health` reports only local application health. Cloudflare Tunnel connector health is available from `http://127.0.0.1:2000/ready` on the Pakistani host.
+`GET /health` reports local application health. `POST /v1/diagnostics/upstream` is bearer-authenticated and checks the configured upstream phone and name/state lookups without returning personal records.
 
-`POST /v1/diagnostics/upstream` is bearer-authenticated and performs configured phone and name/state test lookups. It returns statuses only, never the resulting personal records, and caches diagnostics briefly to avoid excessive upstream traffic.
+## Production architecture
 
-## Complete Pakistani-server setup
+```text
+PeopleGraph backend
+      |
+      | HTTPS + bearer token
+      v
+https://relay.peoplegraph.co
+      |
+      v
+Cloudflare named tunnel
+      |
+      v
+cloudflared container
+      |
+      | Docker network
+      v
+http://relay:8000
+```
 
-### 1. Prepare the service
+Port `8000` is not published to the Internet. Cloudflared establishes outbound tunnel connections to Cloudflare. Port `2000` is bound to `127.0.0.1` only for local readiness and metrics.
 
-Copy this directory to the Pakistani server, then run:
+## Server setup
 
 ```bash
 cd /srv/infolookup-relay
 cp .env.example .env
 chmod 600 .env
+```
+
+Generate a relay bearer token:
+
+```bash
 openssl rand -hex 32
 ```
 
-Put the generated value in `.env` as `RELAY_API_TOKEN`. Save the same value in a password manager; PeopleGraph will need it later. Do not commit `.env`. No Cloudflare account or tunnel token is required for this automatic Quick Tunnel mode.
+Set the resulting value as `RELAY_API_TOKEN` in `.env`. Configure the same value as `SECONDARY_RELAY_API_TOKEN` in the PeopleGraph server's `.env.production`.
 
-For administration diagnostics, configure authorized test values:
+Create a remotely managed Cloudflare Tunnel in the Cloudflare dashboard and configure the published application route:
 
-```dotenv
-DIAGNOSTIC_PHONE_NUMBER=2025550123
-DIAGNOSTIC_FIRST_NAME=Jane
-DIAGNOSTIC_LAST_NAME=Doe
-DIAGNOSTIC_STATE=NY
-DIAGNOSTIC_CACHE_SECONDS=60
+```text
+Hostname: relay.peoplegraph.co
+Service:  http://relay:8000
 ```
 
-To receive a Discord message whenever Cloudflared assigns a new hostname:
+Copy the Cloudflare tunnel token into the relay server's `.env` as `CLOUDFLARE_TUNNEL_TOKEN`. Treat both tokens as secrets and do not commit `.env`.
 
-```dotenv
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
-```
-
-The message body includes the relay API token and the complete new phone and name endpoints. Restrict access to the Discord channel and rotate both the webhook and relay token after any Discord or webhook compromise.
-
-### 2. Start the relay and automatic tunnel
+Start the stack:
 
 ```bash
 docker compose config --quiet
+docker compose pull cloudflared
 docker compose up -d --build
 docker compose ps
 ./status.sh
 ```
 
-At every Cloudflared container start, Compose automatically requests a new `trycloudflare.com` hostname. The manager detects the hostname and atomically writes this host-visible file:
-
-```text
-tunnel-state/current-tunnel.env
-```
-
-Its contents have this form:
-
-```dotenv
-TUNNEL_STATUS=ready
-UPDATED_AT=2026-08-14T00:00:00+00:00
-TUNNEL_BASE_URL=https://random-name.trycloudflare.com
-PHONE_RELAY_ENDPOINT=https://random-name.trycloudflare.com/v1/lookups/phone
-NAME_RELAY_ENDPOINT=https://random-name.trycloudflare.com/v1/lookups/name
-```
-
-Wait until `TUNNEL_STATUS=ready`, then assign the two endpoint values to the corresponding PeopleGraph server configuration. The hostname is temporary and can change whenever the tunnel container is recreated or reconnects, so always use the latest file. The generated file is ignored by Git.
-
-Neither FastAPI port `8000` nor the tunnel origin is published directly to the Internet. Port `2000` is bound only to `127.0.0.1` for local Cloudflared readiness and Prometheus metrics. Anyone who discovers the Quick Tunnel URL can reach the relay, but every lookup remains protected by the required high-entropy `RELAY_API_TOKEN`.
-
-### 3. Test locally on the Pakistani server
+## Test locally
 
 ```bash
 docker compose exec -T relay sh -lc 'curl -sS \
@@ -102,55 +93,44 @@ docker compose exec -T relay sh -lc 'curl -sS \
   http://127.0.0.1:8000/v1/lookups/phone'
 ```
 
-Use a test number you are authorized to process.
+Use only test data you are authorized to process.
 
-Test the name/state route locally with:
+## Test through Cloudflare
 
 ```bash
 docker compose exec -T relay sh -lc 'curl -sS \
   -H "Authorization: Bearer $RELAY_API_TOKEN" \
   -H "Content-Type: application/json" \
-  --data "{\"first_name\":\"Jane\",\"last_name\":\"Doe\",\"state\":\"NY\"}" \
-  http://127.0.0.1:8000/v1/lookups/name'
+  --data "{\"phone_number\":\"2025550123\"}" \
+  https://relay.peoplegraph.co/v1/lookups/phone'
 ```
 
-### 4. Test through the current tunnel
-
-From the German server:
+Health check:
 
 ```bash
-source tunnel-state/current-tunnel.env
-curl -sS \
-  -H "Authorization: Bearer $RELAY_API_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"phone_number":"2025550123"}' \
-  "$PHONE_RELAY_ENDPOINT"
+curl -i https://relay.peoplegraph.co/health
 ```
-
-Copy `current-tunnel.env` to the German server first, or manually set the endpoint from the file on the Pakistani server. For a name/state lookup, use the same bearer header and send the name payload to `$NAME_RELAY_ENDPOINT`.
 
 Expected outcomes:
 
 - `200` with `status: success`: compact records were returned.
 - `200` with `status: not_found`: InfoLookup returned no records.
-- `401`: relay bearer token is absent or incorrect.
+- `401`: the relay bearer token is missing or incorrect.
 - `429`: the relay rate limit was exceeded.
-- `502`: InfoLookup was unavailable, rejected the Pakistani connection, returned invalid data, or required Turnstile.
+- `502`: the upstream provider failed or returned invalid data.
 
-## Operations and tunnel tracking
+## Persistence and credential rotation
 
-Run:
+`RELAY_API_TOKEN` lives in `/srv/infolookup-relay/.env`; recreating the relay container reads the same value again. `CLOUDFLARE_TUNNEL_TOKEN` also lives in `.env`, so the named tunnel reconnects with the same tunnel identity after container recreation.
 
-```bash
-./status.sh
-docker compose logs --since=30m relay cloudflared
+On the PeopleGraph server, enable the backend bootstrap:
+
+```text
+ENSURE_SECONDARY_RELAY_CONFIG=True
+SECONDARY_RELAY_BASE_URL=https://relay.peoplegraph.co
+SECONDARY_RELAY_API_TOKEN=<same RELAY_API_TOKEN>
 ```
 
-Cloudflared's local readiness endpoint returns `200` only while it has an active Cloudflare connection. Its Prometheus metrics include active connections, request counts, and tunnel request errors. `./status.sh` also prints the exact current endpoint file.
+The backend image upserts its singleton relay configuration from these runtime values during startup. This avoids manual Django-admin reconfiguration after backend container recreation while keeping secrets out of the image layers.
 
-Rotate credentials independently:
-
-- Rotate `RELAY_API_TOKEN` by changing it on both relay and PeopleGraph, then recreating the relay container.
-- After Cloudflared restarts, check `tunnel-state/current-tunnel.env` and update PeopleGraph if the hostname changed.
-
-Back up no cookies or InfoLookup tokens. They are temporary and generated per request.
+To rotate `RELAY_API_TOKEN`, change it on both servers and recreate the affected containers. To rotate the Cloudflare tunnel token, change only `CLOUDFLARE_TUNNEL_TOKEN` on the relay server and recreate `cloudflared`.

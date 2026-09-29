@@ -16,6 +16,10 @@ if [ "${ENSURE_DJANGO_ADMIN_USER:-true}" = "true" ]; then
   python manage.py ensure_admin_user
 fi
 
+if [ "${ENSURE_SECONDARY_RELAY_CONFIG:-false}" = "true" ]; then
+  python manage.py ensure_secondary_relay
+fi
+
 if [ "${RUN_COLLECTSTATIC:-true}" = "true" ]; then
   python manage.py collectstatic --noinput
 fi

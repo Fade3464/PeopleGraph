@@ -1,7 +1,11 @@
 import json
+import os
+from io import StringIO
 from unittest.mock import MagicMock, patch
 
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
@@ -132,8 +136,8 @@ class HealthCheckTests(APITestCase):
 class PhoneLookupTests(APITestCase):
     def test_secondary_phone_request_uses_database_relay_configuration(self):
         configuration = SecondaryRelayConfiguration.objects.create(
-            phone_endpoint='https://relay-example.trycloudflare.com/v1/lookups/phone',
-            name_endpoint='https://relay-example.trycloudflare.com/v1/lookups/name',
+            phone_endpoint='https://relay.peoplegraph.co/v1/lookups/phone',
+            name_endpoint='https://relay.peoplegraph.co/v1/lookups/name',
             api_token='relay-token-with-at-least-thirty-two-characters',
             timeout_seconds=17,
         )
@@ -518,6 +522,66 @@ class NameAddressLookupTests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['status'], 'error')
+
+
+class SecondaryRelayBootstrapCommandTests(APITestCase):
+    def test_command_creates_configuration_from_stable_base_url(self):
+        env = {
+            'SECONDARY_RELAY_BASE_URL': 'https://relay.peoplegraph.co',
+            'SECONDARY_RELAY_API_TOKEN': 'relay-token-with-at-least-thirty-two-characters',
+            'SECONDARY_RELAY_ENABLED': 'true',
+            'SECONDARY_RELAY_TIMEOUT_SECONDS': '20',
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            output = StringIO()
+            call_command('ensure_secondary_relay', stdout=output)
+
+        configuration = SecondaryRelayConfiguration.objects.get()
+        self.assertTrue(configuration.enabled)
+        self.assertEqual(configuration.phone_endpoint, 'https://relay.peoplegraph.co/v1/lookups/phone')
+        self.assertEqual(configuration.name_endpoint, 'https://relay.peoplegraph.co/v1/lookups/name')
+        self.assertEqual(configuration.api_token, env['SECONDARY_RELAY_API_TOKEN'])
+        self.assertEqual(configuration.timeout_seconds, 20)
+        self.assertIn('relay.peoplegraph.co', output.getvalue())
+        self.assertNotIn(env['SECONDARY_RELAY_API_TOKEN'], output.getvalue())
+
+    def test_command_updates_existing_configuration(self):
+        configuration = SecondaryRelayConfiguration.objects.create(
+            phone_endpoint='https://old.example/v1/lookups/phone',
+            name_endpoint='https://old.example/v1/lookups/name',
+            api_token='old-token-with-at-least-thirty-two-characters',
+            timeout_seconds=10,
+        )
+        env = {
+            'SECONDARY_RELAY_BASE_URL': 'https://relay.peoplegraph.co',
+            'SECONDARY_RELAY_API_TOKEN': 'new-token-with-at-least-thirty-two-characters',
+            'SECONDARY_RELAY_ENABLED': 'false',
+            'SECONDARY_RELAY_TIMEOUT_SECONDS': '30',
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            call_command('ensure_secondary_relay', stdout=StringIO())
+
+        configuration.refresh_from_db()
+        self.assertFalse(configuration.enabled)
+        self.assertEqual(configuration.phone_endpoint, 'https://relay.peoplegraph.co/v1/lookups/phone')
+        self.assertEqual(configuration.name_endpoint, 'https://relay.peoplegraph.co/v1/lookups/name')
+        self.assertEqual(configuration.api_token, env['SECONDARY_RELAY_API_TOKEN'])
+        self.assertEqual(configuration.timeout_seconds, 30)
+        self.assertEqual(SecondaryRelayConfiguration.objects.count(), 1)
+
+    def test_command_rejects_incomplete_configuration(self):
+        with patch.dict(
+            os.environ,
+            {
+                'SECONDARY_RELAY_BASE_URL': 'https://relay.peoplegraph.co',
+                'SECONDARY_RELAY_API_TOKEN': '',
+            },
+            clear=False,
+        ):
+            with self.assertRaises(CommandError):
+                call_command('ensure_secondary_relay', stdout=StringIO())
 
 
 class SecondaryRelayConfigurationTests(APITestCase):

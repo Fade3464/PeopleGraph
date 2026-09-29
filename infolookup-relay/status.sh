@@ -15,12 +15,8 @@ curl --fail --silent http://127.0.0.1:2000/ready
 echo
 
 echo
-echo "Current public endpoints"
-if [ -f tunnel-state/current-tunnel.env ]; then
-  cat tunnel-state/current-tunnel.env
-else
-  echo "Tunnel state file has not been created yet."
-fi
+echo "Public endpoint"
+echo "https://relay.peoplegraph.co"
 
 echo
 echo "Cloudflared HA connections and request errors"
