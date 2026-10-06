@@ -199,6 +199,33 @@ class PhoneLookupTests(APITestCase):
         secondary_fetch.assert_called_once_with('6175412753')
         blacklist_fetch.assert_called_once_with('6175412753')
 
+    @override_settings(CALLLOOM_ENABLED=False)
+    def test_phone_lookup_skips_callloom_and_uses_secondary_relay(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_phone_lookup') as primary_fetch,
+            patch(
+                'lookups.services.fetch_secondary_phone_lookup',
+                return_value=SECONDARY_RESPONSE,
+            ) as secondary_fetch,
+            patch(
+                'lookups.services.fetch_blacklist_lookup',
+                return_value=SAMPLE_BLACKLIST_RESPONSE,
+            ),
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/phone/',
+                {'phone_number': '6175412753', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'secondary')
+        self.assertTrue(PhoneLookupCache.objects.get().secondary_attempted)
+        primary_fetch.assert_not_called()
+        secondary_fetch.assert_called_once_with('6175412753')
+
     @override_settings(TRUST_X_FORWARDED_FOR=True)
     def test_phone_lookup_fetches_and_caches_upstream_response(self):
         with (
@@ -386,6 +413,47 @@ class NameAddressLookupTests(APITestCase):
         self.assertEqual(set(NameLookupAudit.objects.values_list('successful_result', flat=True)), {True})
         primary_fetch.assert_called_once_with('John', 'Doe', 'Brooklyn, NY', '')
         secondary_fetch.assert_called_once_with('John', 'Doe', 'NY')
+
+    @override_settings(CALLLOOM_ENABLED=False)
+    def test_name_lookup_skips_callloom_and_uses_secondary_relay(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as primary_fetch,
+            patch(
+                'lookups.services.fetch_secondary_name_lookup',
+                return_value=SECONDARY_RESPONSE,
+            ) as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': 'Brooklyn, NY', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['provider'], 'secondary')
+        self.assertTrue(NameAddrLookupCache.objects.get().secondary_attempted)
+        primary_fetch.assert_not_called()
+        secondary_fetch.assert_called_once_with('John', 'Doe', 'NY')
+
+    @override_settings(CALLLOOM_ENABLED=False)
+    def test_name_lookup_does_not_call_callloom_when_relay_cannot_handle_zip(self):
+        with (
+            patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
+            patch('lookups.services.fetch_name_address_lookup') as primary_fetch,
+            patch('lookups.services.fetch_secondary_name_lookup') as secondary_fetch,
+        ):
+            response = self.client.post(
+                '/api/v1/lookups/name-address/',
+                {'full_name': 'John Doe', 'address_or_zip': '10001', 'turnstile_token': 'test-token'},
+                format='json',
+                HTTP_HOST='localhost',
+            )
+
+        self.assertEqual(response.status_code, 502)
+        primary_fetch.assert_not_called()
+        secondary_fetch.assert_not_called()
 
     def test_name_lookup_does_not_fall_back_for_zip_only_input(self):
         with (

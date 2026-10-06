@@ -72,6 +72,7 @@ DJANGO_ADMIN_URL_PATH=<private-admin-path>/
 
 POSTGRES_PASSWORD=<strong-db-password>
 
+CALLLOOM_ENABLED=True
 CALLLOOM_API_KEY=<real-callloom-key>
 TCPA_BLACKLIST_API_KEY=<real-tcpa-key>
 TURNSTILE_SECRET_KEY=<real-cloudflare-secret-key>
@@ -81,6 +82,8 @@ LOOKUP_REGION_ENFORCEMENT_ENABLED=True
 LOOKUP_ALLOWED_COUNTRY_CODE=PK
 IPINFO_API_TOKEN=<new-ipinfo-token>
 ```
+
+To bypass CallLoom during an upstream slowdown, set `CALLLOOM_ENABLED=False` and recreate the backend container. Uncached phone lookups and state-based name lookups will go directly to the configured secondary relay; cached records remain unaffected. When disabled, `CALLLOOM_API_KEY` is optional. ZIP-only name lookups cannot use the current state-based relay endpoint.
 
 Rotate the IPinfo token shown in development chat or shell history and place only the replacement in `.env.production`. The backend caches verified IP decisions in PostgreSQL, so repeated traffic does not call IPinfo on every lookup.
 

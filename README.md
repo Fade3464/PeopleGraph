@@ -126,11 +126,14 @@ POSTGRES_PORT=5432
 Configure the upstream phone lookup provider:
 
 ```text
+CALLLOOM_ENABLED=True
 CALLLOOM_API_KEY=replace-me
 CALLLOOM_PHONE_LOOKUP_URL=https://api.callloom.com/api/people-lookup/get-phone-lookup/
 CALLLOOM_NAME_ADDR_LOOKUP_URL=https://api.callloom.com/api/people-lookup/get-phone-lookup/
 CALLLOOM_TIMEOUT_SECONDS=20
 ```
+
+Set `CALLLOOM_ENABLED=False` to bypass CallLoom for uncached lookups and use the configured secondary relay immediately. Cached results are still served first. The relay must be enabled and configured; its name lookup currently requires a US state, so ZIP-only name searches are unavailable while CallLoom is disabled.
 
 Production uses a stable named Cloudflare Tunnel at `https://relay.peoplegraph.co`. The backend image can bootstrap the singleton **Secondary relay configuration** from `.env.production` on every start, so recreating the backend container does not require re-entering the endpoint or bearer token in Django admin:
 

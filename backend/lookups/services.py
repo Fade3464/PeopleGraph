@@ -247,10 +247,16 @@ def lookup_phone(phone_number: str) -> dict[str, Any]:
         response['blacklist'] = lookup_blacklist(phone_digits, normalized_phone, display_phone)
         return response
 
-    upstream_response = fetch_phone_lookup(phone_digits)
-    provider = PhoneLookupCache.PROVIDER_PRIMARY
-    secondary_attempted = False
-    if not response_has_persons(upstream_response):
+    if not settings.CALLLOOM_ENABLED:
+        upstream_response = fetch_secondary_phone_lookup(phone_digits)
+        provider = PhoneLookupCache.PROVIDER_SECONDARY
+        secondary_attempted = True
+    else:
+        upstream_response = fetch_phone_lookup(phone_digits)
+        provider = PhoneLookupCache.PROVIDER_PRIMARY
+        secondary_attempted = False
+
+    if settings.CALLLOOM_ENABLED and not response_has_persons(upstream_response):
         try:
             secondary_response = fetch_secondary_phone_lookup(phone_digits)
             secondary_attempted = True
@@ -311,15 +317,29 @@ def lookup_name_address(full_name: str, address_or_zip: str) -> dict[str, Any]:
             logger.warning('Secondary name lookup unavailable: %s', exc)
         return build_name_address_response(cached, source='cache')
 
-    upstream_response = fetch_name_address_lookup(
-        normalized['first_name'],
-        normalized['last_name'],
-        normalized['address'],
-        normalized['zipcode'],
-    )
-    provider = NameAddrLookupCache.PROVIDER_PRIMARY
-    secondary_attempted = False
-    if not response_has_persons(upstream_response) and state:
+    if not settings.CALLLOOM_ENABLED:
+        if not state:
+            raise UpstreamLookupError(
+                'CallLoom is disabled and the secondary name lookup requires a US state.'
+            )
+        upstream_response = fetch_secondary_name_lookup(
+            normalized['first_name'],
+            normalized['last_name'],
+            state,
+        )
+        provider = NameAddrLookupCache.PROVIDER_SECONDARY
+        secondary_attempted = True
+    else:
+        upstream_response = fetch_name_address_lookup(
+            normalized['first_name'],
+            normalized['last_name'],
+            normalized['address'],
+            normalized['zipcode'],
+        )
+        provider = NameAddrLookupCache.PROVIDER_PRIMARY
+        secondary_attempted = False
+
+    if settings.CALLLOOM_ENABLED and not response_has_persons(upstream_response) and state:
         try:
             secondary_response = fetch_secondary_name_lookup(
                 normalized['first_name'],
@@ -365,6 +385,9 @@ def contains_us_zip(location: str) -> bool:
 
 
 def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
+    if not settings.CALLLOOM_ENABLED:
+        raise UpstreamLookupError('CallLoom lookups are disabled.')
+
     api_key = os.environ.get('CALLLOOM_API_KEY')
     if not api_key:
         raise UpstreamLookupError('CALLLOOM_API_KEY is not configured.')
@@ -399,6 +422,9 @@ def fetch_phone_lookup(phone_digits: str) -> dict[str, Any]:
 
 
 def fetch_name_address_lookup(first_name: str, last_name: str, address: str, zipcode: str) -> dict[str, Any]:
+    if not settings.CALLLOOM_ENABLED:
+        raise UpstreamLookupError('CallLoom lookups are disabled.')
+
     api_key = os.environ.get('CALLLOOM_API_KEY')
     if not api_key:
         raise UpstreamLookupError('CALLLOOM_API_KEY is not configured.')

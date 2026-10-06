@@ -68,6 +68,7 @@ SECRET_KEY = os.environ.get(
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env_bool('DJANGO_DEBUG', True)
+CALLLOOM_ENABLED = env_bool('CALLLOOM_ENABLED', True)
 
 ALLOWED_HOSTS = env_list('DJANGO_ALLOWED_HOSTS', 'localhost,127.0.0.1')
 
@@ -77,12 +78,13 @@ if not DEBUG:
     if not ALLOWED_HOSTS:
         raise ImproperlyConfigured('DJANGO_ALLOWED_HOSTS must be set in production.')
     required_production_env = [
-        'CALLLOOM_API_KEY',
         'IPINFO_API_TOKEN',
         'TCPA_BLACKLIST_API_KEY',
         'TURNSTILE_ALLOWED_HOSTNAMES',
         'TURNSTILE_SECRET_KEY',
     ]
+    if CALLLOOM_ENABLED:
+        required_production_env.append('CALLLOOM_API_KEY')
     missing_env = [name for name in required_production_env if not os.environ.get(name)]
     if missing_env:
         raise ImproperlyConfigured(f'Missing required production environment variables: {", ".join(missing_env)}')
