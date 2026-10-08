@@ -80,6 +80,13 @@ class PhoneLookupRequest(BaseModel):
         return digits
 
 
+class CompactAddress(BaseModel):
+    street: str = ''
+    city: str = ''
+    state: str = ''
+    zip_code: str = ''
+
+
 class CompactPerson(BaseModel):
     id: str
     name: str
@@ -88,6 +95,7 @@ class CompactPerson(BaseModel):
     state: str = ''
     email: str = ''
     is_secondary: bool = True
+    addresses: list[CompactAddress] = Field(default_factory=list)
 
 
 class NameLookupRequest(BaseModel):
@@ -409,6 +417,25 @@ def run_curl_json(arguments: list[str], stage: str) -> dict[str, Any]:
     return payload
 
 
+def compact_addresses(records: Any) -> list[CompactAddress]:
+    if not isinstance(records, list):
+        return []
+    addresses = []
+    for record in records[:100]:
+        if not isinstance(record, dict):
+            continue
+        def text(key, limit):
+            value = record.get(key)
+            return value.strip()[:limit] if isinstance(value, str) else ''
+        address = CompactAddress(
+            street=text('home', 255), city=text('city', 120),
+            state=text('state', 2).upper(), zip_code=text('zip', 10),
+        )
+        if any(address.model_dump().values()):
+            addresses.append(address)
+    return addresses
+
+
 def compact_people(records: Any) -> list[CompactPerson]:
     if not isinstance(records, list):
         return []
@@ -432,6 +459,7 @@ def compact_people(records: Any) -> list[CompactPerson]:
                 zipcode=str(primary_address.get('zip') or '')[:10],
                 state=str(primary_address.get('state') or '')[:2].upper(),
                 email=email[:320],
+                addresses=compact_addresses(addresses),
             )
         )
     return persons
@@ -462,6 +490,7 @@ def compact_name_people(records: Any) -> list[CompactPerson]:
                 zipcode=zipcode,
                 state=str(address.get('state') or '')[:2].upper(),
                 email=email[:320],
+                addresses=compact_addresses(record.get('addresses') or [address]),
             )
         )
     return persons

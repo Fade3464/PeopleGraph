@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleUserRound,
+  Copy,
   Fingerprint,
   Gauge,
   Home,
@@ -1545,28 +1546,93 @@ function ResultsList({
 }
 
 function SecondaryResultCard({ person, index }: { person: PersonResult; index: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState<number | null>(null);
+  const [copyError, setCopyError] = useState(false);
+  const addresses = person.addresses ?? [];
+  const visibleAddresses = expanded ? addresses : addresses.slice(0, 2);
+  const detailsId = `relay-addresses-${index}`;
+
+  async function copyAddress(address: AddressRecord, addressIndex: number) {
+    try {
+      await navigator.clipboard.writeText(
+        [address.street, address.city, address.state, address.zip_code].filter(Boolean).join(', '),
+      );
+      setCopied(addressIndex);
+      setCopyError(false);
+    } catch {
+      setCopyError(true);
+    }
+  }
+
+  useEffect(() => {
+    if (copied === null) return;
+    const timer = window.setTimeout(() => setCopied(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   return (
     <article
-      className="animate-fade-up rounded-2xl border border-white/10 bg-[#101827]/95 p-4 shadow-panel sm:p-5"
+      className="animate-fade-up rounded-lg border border-white/10 bg-card p-4 shadow-panel transition-colors hover:border-primary/30 motion-reduce:animate-none sm:p-5"
       style={{ animationDelay: `${Math.min(index * 50, 250)}ms` }}
     >
       <div className="flex items-center gap-3 border-b border-white/10 pb-4">
-        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-gradient-to-br from-cyan-400 to-emerald-400 shadow-teal">
-          <CircleUserRound className="size-6 text-[#07100d]" />
+        <span className="grid size-11 shrink-0 place-items-center rounded-full border border-primary/25 bg-primary/10">
+          <CircleUserRound className="size-6 text-primary" />
         </span>
         <div className="min-w-0">
-          <h3 className="truncate text-xl font-extrabold tracking-tight">{getPersonName(person)}</h3>
+          <h3 className="select-text break-words text-xl font-extrabold">{getPersonName(person)}</h3>
           <p className="mt-1 text-xs text-muted-foreground">Age: {formatValue(person.age)}</p>
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <InfoBox icon={MapPin} title="Zip Code" accent="text-primary">
-          <p className="text-sm">{person.zipcode || "Not available"}</p>
-        </InfoBox>
-        <InfoBox icon={MapPinned} title="State" accent="text-cyan-300">
-          <p className="text-sm">{person.state || "Not available"}</p>
-        </InfoBox>
+      {addresses.length > 0 ? (
+        <div className="mt-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+            <MapPin className="size-4 text-primary" />
+            Addresses <span className="text-muted-foreground">({addresses.length})</span>
+          </div>
+          <div id={detailsId} className="divide-y divide-white/10">
+            <div className="hidden grid-cols-[minmax(0,2fr)_minmax(0,1fr)_5rem_6rem_2.5rem] gap-4 pb-2 text-xs font-medium uppercase text-muted-foreground sm:grid">
+              <span>Street</span><span>City</span><span>State</span><span>ZIP</span><span />
+            </div>
+            {visibleAddresses.map((address, addressIndex) => (
+              <div key={addressIndex} className="grid grid-cols-[minmax(0,1fr)_2.5rem] items-center gap-3 py-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_5rem_6rem_2.5rem] sm:gap-4">
+                <p className="select-text break-words text-sm font-semibold">{address.street || 'Street unavailable'}</p>
+                <p className="col-start-1 row-start-2 select-text break-words text-sm text-muted-foreground sm:col-auto sm:row-auto">
+                  {address.city || 'City unavailable'}
+                  <span className="sm:hidden">{[address.state, address.zip_code].filter(Boolean).map((value) => `, ${value}`).join('')}</span>
+                </p>
+                <p className="hidden select-text text-sm text-muted-foreground sm:block">{address.state || '-'}</p>
+                <p className="hidden select-text text-sm text-muted-foreground sm:block">{address.zip_code || '-'}</p>
+                <button type="button" onClick={() => void copyAddress(address, addressIndex)} aria-label={`Copy address ${addressIndex + 1}`} title={copied === addressIndex ? 'Copied' : 'Copy address'} className="col-start-2 row-start-1 grid size-10 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary sm:col-auto sm:row-auto">
+                  {copied === addressIndex ? <CheckCircle2 className="size-4 text-primary" /> : <Copy className="size-4" />}
+                </button>
+              </div>
+            ))}
+          </div>
+          <p role="status" className="sr-only">{copied !== null ? 'Address copied' : ''}</p>
+          {copyError ? <p role="status" className="mt-2 text-xs text-muted-foreground">Unable to copy. Select the address to copy it manually.</p> : null}
+          {addresses.length > 2 ? (
+            <button type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls={detailsId} className="mt-2 flex min-h-10 items-center gap-2 rounded-md px-2 text-sm font-medium text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <ChevronDown className={cn('size-4 transition-transform motion-reduce:transition-none', expanded && 'rotate-180')} />
+              {expanded ? 'Show fewer addresses' : `Show all ${addresses.length} addresses`}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className={cn('mt-4 grid gap-3', addresses.length ? 'border-t border-white/10 pt-4' : 'sm:grid-cols-3')}>
+        {!addresses.length ? (
+          <>
+            <InfoBox icon={MapPin} title="Zip Code" accent="text-primary">
+              <p className="text-sm">{person.zipcode || "Not available"}</p>
+            </InfoBox>
+            <InfoBox icon={MapPinned} title="State" accent="text-cyan-300">
+              <p className="text-sm">{person.state || "Not available"}</p>
+            </InfoBox>
+          </>
+        ) : null}
         <InfoBox icon={Mail} title="Email" accent="text-emerald-400">
           <p className="break-all text-sm">{person.email || "Not available"}</p>
         </InfoBox>

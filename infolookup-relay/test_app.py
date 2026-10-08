@@ -104,7 +104,11 @@ def test_lookup_returns_only_compact_fields():
             {
                 'name': 'Test Person',
                 'age': '40',
-                'addresses': [{'state': 'PA', 'zip': '19000', 'home': 'Hidden'}],
+                'addresses': [
+                    {'state': 'PA', 'zip': '19000', 'home': '12 Main St', 'city': 'Example'},
+                    {'state': 'NY', 'zip': '10001', 'home': '34 Oak St', 'city': 'New York'},
+                    None,
+                ],
                 'emails': ['test@example.com'],
                 'relatives': ['Hidden Relative'],
             }
@@ -123,7 +127,10 @@ def test_lookup_returns_only_compact_fields():
     assert person['zipcode'] == '19000'
     assert person['state'] == 'PA'
     assert person['email'] == 'test@example.com'
-    assert 'addresses' not in person
+    assert person['addresses'] == [
+        {'street': '12 Main St', 'city': 'Example', 'state': 'PA', 'zip_code': '19000'},
+        {'street': '34 Oak St', 'city': 'New York', 'state': 'NY', 'zip_code': '10001'},
+    ]
     assert 'relatives' not in person
 
 
@@ -207,6 +214,7 @@ def test_name_lookup_accepts_state_and_returns_only_compact_fields():
         'state': 'NY',
         'email': 'jane@example.com',
         'is_secondary': True,
+        'addresses': [{'street': '', 'city': 'Hidden', 'state': 'NY', 'zip_code': '10001'}],
     }
 
 
@@ -242,5 +250,4 @@ def test_name_upstream_request_uses_only_first_last_and_state():
     assert 'state=NY' in arguments
     assert not any('zip' in argument.lower() for argument in arguments)
     assert result == {'status': 'ok', 'count': 0, 'results': []}
-
 

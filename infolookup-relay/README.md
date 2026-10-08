@@ -1,6 +1,6 @@
 # InfoLookup Relay
 
-A narrow authenticated FastAPI relay running on the Pakistani origin. It performs InfoLookup phone and name/state requests from that server's public IP and returns only compact person fields.
+A narrow authenticated FastAPI relay running on the Pakistani origin. It performs InfoLookup phone and name/state requests from that server's public IP and returns compact person fields plus structured addresses (`street`, `city`, `state`, `zip_code`). Address lists preserve provider order, with a limit of 100 addresses per person.
 
 The relay is exposed through the named Cloudflare Tunnel hostname `https://relay.peoplegraph.co`. It is not a general HTTP proxy and does not accept caller-controlled URLs or headers.
 
@@ -23,6 +23,8 @@ Both lookup routes require:
 ```text
 Authorization: Bearer <RELAY_API_TOKEN>
 ```
+
+For the structured-address update, rebuild both the relay and the PeopleGraph backend/frontend. No database migration is required: new address lists are stored in the existing lookup cache JSON. Previously cached compact records still contain only the fields originally saved; they keep their state/ZIP display until explicitly refreshed. Do not clear the entire lookup cache to roll out this update.
 
 `GET /health` reports local application health. `POST /v1/diagnostics/upstream` is bearer-authenticated and checks the configured upstream phone and name/state lookups without returning personal records.
 

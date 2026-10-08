@@ -667,6 +667,8 @@ def normalize_relay_response(payload: Any, lookup_type: str) -> dict[str, Any]:
                 'state': relay_text(record.get('state'), 2).upper(),
                 'email': relay_text(record.get('email'), 320),
                 'is_secondary': True,
+                **({'addresses': normalize_relay_addresses(record.get('addresses'))}
+                   if 'addresses' in record else {}),
             }
         )
 
@@ -684,6 +686,24 @@ def normalize_relay_response(payload: Any, lookup_type: str) -> dict[str, Any]:
             },
         },
     }
+
+
+def normalize_relay_addresses(records: Any) -> list[dict[str, str]]:
+    if not isinstance(records, list):
+        return []
+    addresses = []
+    for record in records[:100]:
+        if not isinstance(record, dict):
+            continue
+        address = {
+            'street': relay_text(record.get('street'), 255),
+            'city': relay_text(record.get('city'), 120),
+            'state': relay_text(record.get('state'), 2).upper(),
+            'zip_code': relay_text(record.get('zip_code'), 10),
+        }
+        if any(address.values()):
+            addresses.append(address)
+    return addresses
 
 
 def relay_text(value: Any, max_length: int) -> str:
@@ -984,6 +1004,8 @@ def serialize_cached_person(person: dict[str, Any], provider: str) -> dict[str, 
             'state': str(person.get('state') or ''),
             'email': str(person.get('email') or ''),
             'is_secondary': True,
+            **({'addresses': normalize_relay_addresses(person.get('addresses'))}
+               if 'addresses' in person else {}),
         }
     return serialize_person(person)
 

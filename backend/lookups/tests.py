@@ -162,10 +162,21 @@ class PhoneLookupTests(APITestCase):
         self.assertEqual(result['status'], 'not_found')
 
     def test_phone_lookup_falls_back_after_empty_primary_and_caches_secondary(self):
+        addresses = [
+            {'street': '12 Main St', 'city': 'New York', 'state': 'NY', 'zip_code': '10001'},
+            {'street': '34 Oak St', 'city': 'Albany', 'state': 'NY', 'zip_code': '12207'},
+        ]
+        relay_response = {
+            **SECONDARY_RESPONSE,
+            'data': {
+                **SECONDARY_RESPONSE['data'],
+                'persons': [{**SECONDARY_RESPONSE['data']['persons'][0], 'addresses': addresses}],
+            },
+        }
         with (
             patch('lookups.views.validate_turnstile_token', return_value={'success': True}),
             patch('lookups.services.fetch_phone_lookup', return_value=EMPTY_RESPONSE) as primary_fetch,
-            patch('lookups.services.fetch_secondary_phone_lookup', return_value=SECONDARY_RESPONSE) as secondary_fetch,
+            patch('lookups.services.fetch_secondary_phone_lookup', return_value=relay_response) as secondary_fetch,
             patch(
                 'lookups.services.fetch_blacklist_lookup',
                 return_value=SAMPLE_BLACKLIST_RESPONSE,
@@ -190,6 +201,8 @@ class PhoneLookupTests(APITestCase):
         self.assertEqual(cached_response.data['source'], 'cache')
         self.assertEqual(cached_response.data['blacklist']['source'], 'cache')
         self.assertEqual(response.data['data']['persons'][0]['email'], 'john@example.com')
+        self.assertEqual(response.data['data']['persons'][0]['addresses'], addresses)
+        self.assertEqual(cached_response.data['data']['persons'][0]['addresses'], addresses)
         self.assertNotIn('raw', response.data['data']['persons'][0])
         self.assertEqual(PhoneLookupCache.objects.get().provider, 'secondary')
         self.assertTrue(PhoneLookupCache.objects.get().secondary_attempted)
@@ -726,6 +739,11 @@ class SecondaryRelayConfigurationTests(APITestCase):
                         'zipcode': '10001',
                         'state': 'ny',
                         'email': 'jane@example.com',
+                        'addresses': [
+                            {'street': '12 Main St', 'city': 'New York', 'state': 'ny', 'zip_code': '10001'},
+                            {'street': '34 Oak St', 'city': 'Albany', 'state': 'ny', 'zip_code': '12207'},
+                            None,
+                        ],
                         'relatives': ['must not pass through'],
                     }
                 ],
@@ -752,6 +770,10 @@ class SecondaryRelayConfigurationTests(APITestCase):
                 'state': 'NY',
                 'email': 'jane@example.com',
                 'is_secondary': True,
+                'addresses': [
+                    {'street': '12 Main St', 'city': 'New York', 'state': 'NY', 'zip_code': '10001'},
+                    {'street': '34 Oak St', 'city': 'Albany', 'state': 'NY', 'zip_code': '12207'},
+                ],
             },
         )
 
